@@ -7,10 +7,12 @@ import { createTaskRoutes } from './routes/taskRoutes';
 import { createWebhookRoutes } from './routes/webhookRoutes';
 import { TaskController } from './controllers/TaskController';
 import { WhatsAppWebhookController } from './controllers/WhatsAppWebhookController';
+import { WebhookIdempotencyGuard } from './middleware/idempotency/WebhookIdempotencyGuard';
 
 export function createApp(
   taskController: TaskController,
-  webhookController: WhatsAppWebhookController
+  webhookController: WhatsAppWebhookController,
+  idempotencyGuard: WebhookIdempotencyGuard
 ): express.Application {
   const app = express();
 
@@ -37,7 +39,7 @@ export function createApp(
 
   // --- Versioned API Routes ---
   app.use('/v1/tasks', createTaskRoutes(taskController));
-  app.use('/v1/webhooks', createWebhookRoutes(webhookController));
+  app.use('/v1/webhooks', createWebhookRoutes(webhookController, idempotencyGuard));
 
   // Health endpoint — no auth required
   app.get('/health', (_req, res) => {

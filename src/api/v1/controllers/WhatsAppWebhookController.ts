@@ -1,10 +1,10 @@
 import { Request, Response } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { HttpErrorMapper } from '../../errors/HttpErrorMapper';
+import { InboundMessagePipeline } from '../../../application/conversation/InboundMessagePipeline';
 
 const WEBHOOK_SECRET = process.env.WHATSAPP_WEBHOOK_SECRET ?? 'changeme';
 
-// Validate WhatsApp Cloud API HMAC-SHA256 signature
 function verifySignature(payload: Buffer, signature: string): boolean {
   const expected = createHmac('sha256', WEBHOOK_SECRET)
     .update(payload)
@@ -17,8 +17,9 @@ function verifySignature(payload: Buffer, signature: string): boolean {
 }
 
 export class WhatsAppWebhookController {
+  
+  constructor(private pipeline: InboundMessagePipeline) {}
 
-  // GET: WhatsApp webhook verification handshake
   verify(req: Request, res: Response): void {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -31,7 +32,6 @@ export class WhatsAppWebhookController {
     }
   }
 
-  // POST: Receive inbound messages — treat all payloads as UNTRUSTED
   async receive(req: Request, res: Response): Promise<void> {
     try {
       const signature = req.headers['x-hub-signature-256'] as string;
@@ -41,23 +41,45 @@ export class WhatsAppWebhookController {
         return;
       }
 
-      // Parse only after signature is verified
       const payload = JSON.parse(req.body.toString());
+
+      const entry = payload?.entry?.[0];
+      const change = entry?.changes?.[0];
+      const message = change?.value?.messages?.[0];
+      const contact = change?.value?.contacts?.[0];
+      
+      if (!message || !message.id) {
+        res.status(200).json({ status: 'ignored_non_message' });
+        return;
+      }
+
+      const messageId = message.id;
+      const userId = contact?.wa_id || message.from;
+      const messageText = message.text?.body;
 
       console.log(JSON.stringify({
         type: 'WEBHOOK_RECEIVED',
         source: 'WHATSAPP',
+        messageId,
+        userId,
         traceId: req.traceId,
-        correlationId: req.correlationId,
-        executionMode: req.identity.executionMode
-        // Payload intentionally not logged — may contain PII
+        timestamp: new Date().toISOString()
       }));
 
-      // Route through ACL → Application Layer (wired in Composition Root)
-      // Returns 200 immediately — WhatsApp expects fast acknowledgement
+      // Immediately return 200 OK to WhatsApp to prevent retries and timeouts
       res.status(200).json({ status: 'received' });
+
+      // Async Background Dispatch
+      if (messageText && userId) {
+        // Fire and forget (in production, use a background worker queue like BullMQ here)
+        this.pipeline.process(userId, messageText, messageId, req.traceId).catch(err => {
+          console.error(`[BACKGROUND_PIPELINE_ERROR] Trace: ${req.traceId} - ${err.message}`);
+        });
+      }
+
     } catch (err) {
       HttpErrorMapper.toResponse(err, res, req.correlationId);
     }
   }
 }
+
