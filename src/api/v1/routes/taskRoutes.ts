@@ -5,8 +5,8 @@ import { validateBody } from '../../middleware/validateBody';
 import { idempotencyGuard } from '../../middleware/idempotencyGuard';
 import { CreateTaskRequestDTO } from '../../dtos/TransportDTOs';
 
-const router = Router();
-const controller = new TaskController();
+export function createTaskRoutes(controller: TaskController): Router {
+  const router = Router();
 
 const taskRateLimit = rateLimit({
   windowMs: 60 * 1000,
@@ -22,4 +22,5 @@ router.post(
   (req, res) => controller.createTask(req, res)
 );
 
-export default router;
+  return router;
+}

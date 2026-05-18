@@ -6,8 +6,8 @@ import { buildObservabilityModule } from './modules/observability.module';
 import { buildAIModule } from './modules/ai.module';
 import { StartupValidator } from './lifecycle/StartupValidator';
 import { GracefulShutdown } from './lifecycle/GracefulShutdown';
-import { createApp } from '../api/v1/app';
-
+import { buildApplicationModule } from './modules/application.module';
+import { buildApiModule } from './modules/api.module';
 // =====================================================================
 // KarenBootstrap — THE ONLY PLACE concrete implementations are assembled.
 // No other module may call new MongoClient(), new Redis(), etc.
@@ -42,9 +42,11 @@ export async function bootstrap(): Promise<void> {
   });
   graceful.register();
 
-  // 7. Create and start the Express application
-  const app = createApp();
-  app.listen(config.PORT, () => {
+  // 7. Build application layer and API layer
+  const application = buildApplicationModule(persistence);
+  const api = buildApiModule(application);
+
+  api.app.listen(config.PORT, () => {
     console.log(`[BOOTSTRAP] Karen is READY on port ${config.PORT}`);
     console.log(`[BOOTSTRAP] Mode: ${config.EXECUTION_MODE}`);
     console.log(`[BOOTSTRAP] Features: proactive=${flags.proactiveModeEnabled}, reflection=${flags.reflectionAgentEnabled}`);

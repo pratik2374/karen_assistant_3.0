@@ -1,9 +1,17 @@
 import { IStructuredLogger, StructuredLogEntry, ExecutionMode, LogLevel } from './IStructuredLogger';
+import { TelemetryBackpressure } from '../telemetry/TelemetryBackpressure';
 
 export class ConsoleStructuredLogger implements IStructuredLogger {
+  private backpressure = new TelemetryBackpressure({ maxEventsPerSecond: 500, sampleRateIfThrottled: 0.01 });
+
   constructor(private defaultMode: ExecutionMode = 'PRODUCTION') {}
 
   private emit(level: LogLevel, message: string, context: Partial<StructuredLogEntry>): void {
+    // Drop logs safely if we are exceeding I/O budget (except ERROR/SECURITY)
+    if (level !== 'ERROR' && level !== 'SECURITY' && !this.backpressure.shouldEmit()) {
+      return;
+    }
+
     const entry: StructuredLogEntry = {
       traceId: context.traceId ?? 'untraced',
       correlationId: context.correlationId ?? 'uncorrelated',

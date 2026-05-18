@@ -37,6 +37,7 @@ export interface AsyncCommandResponseDTO {
   status: 'ACCEPTED' | 'QUEUED';
   correlationId: string;
   traceId: string;
+  commandId: string;
   message: string;
 }
 

@@ -3,10 +3,15 @@ import helmet from 'helmet';
 import cors from 'cors';
 import { rateLimit } from 'express-rate-limit';
 import { resolveIdentity } from '../middleware/resolveIdentity';
-import taskRoutes from './routes/taskRoutes';
-import webhookRoutes from './routes/webhookRoutes';
+import { createTaskRoutes } from './routes/taskRoutes';
+import { createWebhookRoutes } from './routes/webhookRoutes';
+import { TaskController } from './controllers/TaskController';
+import { WhatsAppWebhookController } from './controllers/WhatsAppWebhookController';
 
-export function createApp(): express.Application {
+export function createApp(
+  taskController: TaskController,
+  webhookController: WhatsAppWebhookController
+): express.Application {
   const app = express();
 
   // --- Security Hardening ---
@@ -31,8 +36,8 @@ export function createApp(): express.Application {
   app.use(resolveIdentity);
 
   // --- Versioned API Routes ---
-  app.use('/v1/tasks', taskRoutes);
-  app.use('/v1/webhooks', webhookRoutes);
+  app.use('/v1/tasks', createTaskRoutes(taskController));
+  app.use('/v1/webhooks', createWebhookRoutes(webhookController));
 
   // Health endpoint — no auth required
   app.get('/health', (_req, res) => {

@@ -1,34 +1,54 @@
 import { Request, Response } from 'express';
 import { CreateTaskRequestDTO, AsyncCommandResponseDTO } from '../../dtos/TransportDTOs';
 import { HttpErrorMapper } from '../../errors/HttpErrorMapper';
+import { ICommandExecutor } from '../../../application/executor/IExecutor';
+import { CreateTaskCommand, CreateTaskResult } from '../../../application/handlers/TaskCommandHandler';
+import { ExecutionContext } from '../../../composition/context/ExecutionContext';
 import { randomUUID } from 'crypto';
 
 // Controller is INTENTIONALLY thin — no domain logic, no repository access.
-// Receives validated DTO → maps to Command → dispatches to Application Layer → returns 202 ACCEPTED.
+// Receives validated DTO → maps to Command → dispatches to Executor → returns 202 ACCEPTED.
 export class TaskController {
+  
+  constructor(
+    private readonly commandExecutor: ICommandExecutor<CreateTaskCommand, CreateTaskResult>
+  ) {}
 
   async createTask(req: Request, res: Response): Promise<void> {
     try {
       const dto = req.body as CreateTaskRequestDTO;
       const { correlationId, traceId, identity } = req;
 
-      // Dispatch to Application Layer (Command Handler injected via Composition Root)
-      // Placeholder: in production this calls TaskCommandHandler.handle(command)
       const commandId = randomUUID();
-      console.log(JSON.stringify({
-        type: 'COMMAND_DISPATCHED',
+      
+      const command: CreateTaskCommand = {
         commandId,
-        actionType: 'CREATE_TASK',
-        correlationId,
+        commandDeduplicationKey: dto.idempotencyKey,
+        title: dto.title,
+        priority: dto.priority,
+        dueAt: new Date(dto.dueAt),
+        timezone: dto.timezone
+      };
+
+      // Map Express request identity to Domain execution context
+      const context = new ExecutionContext(
         traceId,
-        executionMode: identity.executionMode,
-        payload: { title: dto.title, priority: dto.priority }
-      }));
+        correlationId,
+        identity.userId,
+        identity.sessionId,
+        identity.scopes,
+        identity.executionMode,
+        500000 // In a real app, resolve from token budget service
+      );
+
+      // Dispatch to pipeline (middleware + handler)
+      await this.commandExecutor.execute(command, context);
 
       const response: AsyncCommandResponseDTO = {
         status: 'ACCEPTED',
         correlationId,
         traceId,
+        commandId,
         message: 'Task creation command accepted and queued for processing'
       };
 
@@ -39,3 +59,4 @@ export class TaskController {
     }
   }
 }
+
