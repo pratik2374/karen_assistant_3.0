@@ -9,7 +9,8 @@ import { RedisIdempotencyStore } from '../messaging/consumer/RedisIdempotencySto
 import { ExecutionContext } from '../../../composition/context/ExecutionContext';
 import { RuntimeEventBus } from '../../../console/RuntimeEventBus';
 import { DomainEvent } from '../../../domain/shared/events/DomainEvent';
-import { MessageEnvelope } from '../contracts/MessageEnvelope';
+import { MessageEnvelope } from '../contracts/MessageEnvelope.js';
+import { CalendarSyncAgent } from '../../../application/calendar/CalendarSyncAgent.js';
 
 export class BullMQConsumerRegistry {
   private workers: Worker[] = [];
@@ -21,7 +22,8 @@ export class BullMQConsumerRegistry {
     private sagaRepository: MongoSagaRepository,
     private taskRepository: TaskMongoRepository,
     private whatsappAdapter: WhatsAppAdapter,
-    private idempotencyStore: RedisIdempotencyStore
+    private idempotencyStore: RedisIdempotencyStore,
+    private calendarSyncAgent?: CalendarSyncAgent
   ) {}
 
   public async start(): Promise<void> {
@@ -108,7 +110,14 @@ export class BullMQConsumerRegistry {
             // Handle domain-specific events
             if (event.eventType === 'Task.Created' || event.eventType === 'Reminder.Acknowledged') {
               await this.sagaDispatcher.dispatchEvent(event, context);
+              if (this.calendarSyncAgent) {
+                await this.calendarSyncAgent.processDomainEvent(event, context);
+              }
             } else if (event.eventType === 'Reminder.Escalated') {
+              // Future: we could pass Reminder.Escalated to calendarSyncAgent here too
+              if (this.calendarSyncAgent) {
+                await this.calendarSyncAgent.processDomainEvent(event, context);
+              }
               // Physical Outbound Send Integration!
               const sagaId = `saga-reminder-${event.payload.taskId}`;
               const sagaSnapshot = await this.sagaRepository.findById(sagaId);

@@ -46,12 +46,15 @@ import { CalendarSyncAgent } from '../../application/calendar/CalendarSyncAgent.
 import { CalendarSyncWorker } from '../../infrastructure/workers/CalendarSyncWorker.js';
 import { CalendarReconciliationWorker } from '../../infrastructure/workers/CalendarReconciliationWorker.js';
 import { CircuitBreaker } from '../../infrastructure/resiliency/CircuitBreaker.js';
+import { BootSyncCoordinator } from '../../console/BootSyncCoordinator.js';
+import { CalendarAgent } from '../../application/ai/agents/CalendarAgent.js';
 
 export interface ApiModule {
   app: express.Application;
   timerService?: HybridTimerService;
   sagaDispatcher?: SagaDispatcher;
   consumerRegistry?: BullMQConsumerRegistry;
+  bootSyncCoordinator?: BootSyncCoordinator;
 }
 
 export function buildApiModule(
@@ -111,7 +114,8 @@ export function buildApiModule(
     application.taskCommandExecutor,
     persistence,
     orchestrator,
-    memoryService
+    memoryService,
+    undefined // CalendarAgent injected later when instantiated
   );
 
   const idempotencyGuard = new WebhookIdempotencyGuard(messaging.redis);
@@ -126,6 +130,9 @@ export function buildApiModule(
   
   let calendarSyncWorker: CalendarSyncWorker | undefined;
   let calendarReconciliationWorker: CalendarReconciliationWorker | undefined;
+  
+  let bootSyncCoordinator: BootSyncCoordinator | undefined;
+  let calendarAgent: CalendarAgent | undefined;
 
   if (persistence) {
     const sagaRepository = new MongoSagaRepository(persistence.db);
@@ -173,6 +180,18 @@ export function buildApiModule(
     calendarReconciliationWorker = new CalendarReconciliationWorker(calendarAdapter, calendarProjectionRepo);
     calendarReconciliationWorker.start();
 
+    bootSyncCoordinator = new BootSyncCoordinator(
+      calendarAdapter,
+      calendarProjectionRepo,
+      persistence.taskRepository,
+      timerService,
+      memoryService!
+    );
+
+    calendarAgent = new CalendarAgent(calendarAdapter, calendarProjectionRepo);
+    // Late bind to pipeline
+    (pipeline as any).calendarAgent = calendarAgent;
+
     consumerRegistry = new BullMQConsumerRegistry(
       messaging.redis,
       sagaDispatcher,
@@ -188,5 +207,5 @@ export function buildApiModule(
   }
 
   console.log('[API] Express app wired with controllers and transport guards.');
-  return { app, timerService, sagaDispatcher, consumerRegistry };
+  return { app, timerService, sagaDispatcher, consumerRegistry, bootSyncCoordinator };
 }

@@ -9,6 +9,7 @@ import { ReminderAggregate } from '../../domain/reminder/ReminderAggregate.js';
 import { MemoryTier } from '../../domain/memory/MemoryTiers.js';
 import { MainKarenOrchestrator } from '../ai/agents/MainKarenOrchestrator.js';
 import { MemoryService } from '../ai/memory/MemoryService.js';
+import { CalendarAgent } from '../ai/agents/CalendarAgent.js';
 import { randomUUID } from 'crypto';
 
 export class InboundMessagePipeline {
@@ -20,7 +21,8 @@ export class InboundMessagePipeline {
     private commandExecutor: ICommandExecutor<any, any>, // Generalized for this phase
     private persistence?: any,
     private orchestrator?: MainKarenOrchestrator,
-    private memoryService?: MemoryService
+    private memoryService?: MemoryService,
+    private calendarAgent?: CalendarAgent
   ) {}
 
   public async process(
@@ -269,37 +271,26 @@ export class InboundMessagePipeline {
             break;
           }
 
-          if (isListTasks && this.persistence) {
+          if (isListTasks) {
             try {
-              const startOfDay = new Date();
-              startOfDay.setHours(0, 0, 0, 0);
-              
-              const projections = await this.persistence.db.collection('calendar_event_projection')
-                .find({ 
-                  createdBy: userId,
-                  startTime: { $gte: startOfDay }
-                })
-                .sort({ startTime: 1 })
-                .limit(10)
-                .toArray();
+              if (this.calendarAgent) {
+                const targetDateRaw = payloadObj.targetDate || new Date().toISOString();
+                const targetDate = new Date(targetDateRaw);
+                
+                const result = await this.calendarAgent.execute({
+                  intent: 'list_tasks',
+                  targetCount: 0,
+                  description: 'Fetch active schedule from Google Calendar',
+                  riskLevel: 'LOW'
+                }, { traceId, targetDate });
 
-              let replyText = "Here is your upcoming schedule:\n\n";
-              if (projections.length === 0) {
-                replyText = "Your calendar is completely clear! No upcoming tasks found.";
+                let replyText = result.summaryReport;
+                replyText += "\n\nLet me know if you'd like to cancel or reschedule any of these!";
+
+                await this.sendReply(userId, replyText, messageId);
               } else {
-                projections.forEach((p: any, index: number) => {
-                  const timeStr = new Date(p.startTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: p.timezone || 'Asia/Kolkata' });
-                  replyText += `${index + 1}. [${timeStr}] ${p.title}\n   ID: ${p.internalTaskId.split('-')[0]}\n\n`;
-                });
-                replyText += "Let me know if you'd like to cancel or reschedule any of these!";
+                await this.sendReply(userId, "Calendar integration is currently offline.", messageId);
               }
-
-              await this.sendReply(userId, replyText, messageId);
-              
-              RuntimeEventBus.log('CALENDAR_QUERY', 'SYSTEM',
-                `Queried ${projections.length} active tasks for user ${userId}`,
-                traceId
-              );
             } catch (err: any) {
               console.error('[CalendarQuery] Failed:', err);
               await this.sendReply(userId, "I'm sorry, I ran into an issue reading your calendar right now.", messageId);

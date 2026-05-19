@@ -220,4 +220,34 @@ export class GoogleCalendarAdapter extends ToolExecutionGateway implements ICale
       throw err;
     }
   }
+
+  async listEvents(timeMin: Date, timeMax: Date, isSandbox: boolean): Promise<any[]> {
+    if (!this.isConfigured || isSandbox) {
+      return [];
+    }
+
+    return this.execute(
+      {
+        operationName: 'GoogleCalendar.ListEvents',
+        isReplay: false,
+        isSandbox,
+        replaySafe: true,
+        idempotencyKey: `cal-list-${timeMin.getTime()}-${timeMax.getTime()}`,
+        requiredScopes: ['READ_CALENDAR']
+      },
+      async () => {
+        const res = await this.calendarApi!.events.list({
+          calendarId: this.defaultCalendarId,
+          timeMin: timeMin.toISOString(),
+          timeMax: timeMax.toISOString(),
+          singleEvents: true,
+          orderBy: 'startTime'
+        });
+        return res.data.items || [];
+      },
+      async () => {
+        return [];
+      }
+    );
+  }
 }

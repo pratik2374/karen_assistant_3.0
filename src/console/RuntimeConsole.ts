@@ -98,6 +98,11 @@ async function bootConsole(): Promise<void> {
     });
   }
 
+  // ── Execute Boot Synchronization Sequence (Calendar & Vectors) ───────────
+  if (api.bootSyncCoordinator) {
+    await api.bootSyncCoordinator.syncAll();
+  }
+
   // ── Graceful Shutdown ────────────────────────────────────────────────────
   const graceful = new GracefulShutdown({
     mongoClient: persistence!.client,
