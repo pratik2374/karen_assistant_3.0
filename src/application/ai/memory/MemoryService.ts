@@ -1,6 +1,6 @@
 import { Db } from 'mongodb';
-import { IOpenAIAdapter } from '../../ports/IOpenAIAdapter';
-import { RuntimeEventBus } from '../../../console/RuntimeEventBus';
+import { IOpenAIAdapter } from '../../ports/IOpenAIAdapter.js';
+import { RuntimeEventBus } from '../../../console/RuntimeEventBus.js';
 import { randomUUID } from 'crypto';
 
 export class MemoryService {

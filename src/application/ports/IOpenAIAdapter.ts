@@ -1,4 +1,4 @@
-import { PromptVersion } from '../ai/prompts/PromptRegistry';
+import { PromptVersion } from '../ai/prompts/PromptRegistry.js';
 
 export interface OpenAICompletionRequest {
   systemPrompt: PromptVersion;
