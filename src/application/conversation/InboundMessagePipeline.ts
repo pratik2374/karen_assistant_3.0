@@ -9,7 +9,7 @@ import { ReminderAggregate } from '../../domain/reminder/ReminderAggregate.js';
 import { MemoryTier } from '../../domain/memory/MemoryTiers.js';
 import { MainKarenOrchestrator } from '../ai/agents/MainKarenOrchestrator.js';
 import { MemoryService } from '../ai/memory/MemoryService.js';
-import { CalendarAgent } from '../ai/agents/CalendarAgent.js';
+import { AgentRouter } from '../agents/AgentRouter.js';
 import { randomUUID } from 'crypto';
 
 export class InboundMessagePipeline {
@@ -22,7 +22,7 @@ export class InboundMessagePipeline {
     private persistence?: any,
     private orchestrator?: MainKarenOrchestrator,
     private memoryService?: MemoryService,
-    private calendarAgent?: CalendarAgent
+    private agentRouter?: AgentRouter
   ) {}
 
   public async process(
@@ -271,29 +271,33 @@ export class InboundMessagePipeline {
             break;
           }
 
-          if (isListTasks) {
+          if (isListTasks || this.agentRouter?.canRoute(intentAction)) {
             try {
-              if (this.calendarAgent) {
-                const targetDateRaw = payloadObj.targetDate || new Date().toISOString();
-                const targetDate = new Date(targetDateRaw);
-                
-                const result = await this.calendarAgent.execute({
-                  intent: 'list_tasks',
-                  targetCount: 0,
-                  description: 'Fetch active schedule from Google Calendar',
-                  riskLevel: 'LOW'
-                }, { traceId, targetDate });
+              if (this.agentRouter && this.agentRouter.canRoute(intentAction)) {
+                const agentContext = {
+                  intent: intentAction,
+                  payload: payloadObj,
+                  userId,
+                  traceId,
+                  correlationId,
+                  isReplay: false,
+                  isSandbox: false,
+                };
 
-                let replyText = result.summaryReport;
-                replyText += "\n\nLet me know if you'd like to cancel or reschedule any of these!";
+                const routerResult = await this.agentRouter.route(intentAction, agentContext);
 
-                await this.sendReply(userId, replyText, messageId);
+                if (routerResult.routed) {
+                  const { result } = routerResult;
+                  await this.sendReply(userId, result.summaryReport, messageId);
+                } else {
+                  await this.sendReply(userId, "I couldn't process that request right now. Please try rephrasing.", messageId);
+                }
               } else {
                 await this.sendReply(userId, "Calendar integration is currently offline.", messageId);
               }
             } catch (err: any) {
-              console.error('[CalendarQuery] Failed:', err);
-              await this.sendReply(userId, "I'm sorry, I ran into an issue reading your calendar right now.", messageId);
+              console.error('[AgentRouter] Calendar dispatch failed:', err);
+              await this.sendReply(userId, "I'm sorry, I ran into an issue with your calendar right now.", messageId);
             }
             break;
           }

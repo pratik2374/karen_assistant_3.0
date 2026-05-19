@@ -40,14 +40,17 @@ import { Queue } from 'bullmq';
 
 // Calendar Sync Imports
 import { CalendarProjectionMongoRepository } from '../../infrastructure/persistence/mongo/repositories/CalendarProjectionMongoRepository.js';
-import { GoogleCalendarAdapter } from '../../infrastructure/external/calendar/GoogleCalendarAdapter.js';
-import { CalendarSandboxAdapter } from '../../infrastructure/external/calendar/CalendarSandboxAdapter.js';
 import { CalendarSyncAgent } from '../../application/calendar/CalendarSyncAgent.js';
 import { CalendarSyncWorker } from '../../infrastructure/workers/CalendarSyncWorker.js';
 import { CalendarReconciliationWorker } from '../../infrastructure/workers/CalendarReconciliationWorker.js';
 import { CircuitBreaker } from '../../infrastructure/resiliency/CircuitBreaker.js';
 import { BootSyncCoordinator } from '../../console/BootSyncCoordinator.js';
-import { CalendarAgent } from '../../application/ai/agents/CalendarAgent.js';
+
+// New Multi-Agent Architecture
+import { ComposioClient } from '../../infrastructure/composio/ComposioClient.js';
+import { CalendarTool } from '../../tools/calendar/CalendarTool.js';
+import { CalendarAgent } from '../../agents/calendar/CalendarAgent.js';
+import { AgentRouter } from '../agents/AgentRouter.js';
 
 export interface ApiModule {
   app: express.Application;
@@ -132,7 +135,7 @@ export function buildApiModule(
   let calendarReconciliationWorker: CalendarReconciliationWorker | undefined;
   
   let bootSyncCoordinator: BootSyncCoordinator | undefined;
-  let calendarAgent: CalendarAgent | undefined;
+  let agentRouter: AgentRouter | undefined;
 
   if (persistence) {
     const sagaRepository = new MongoSagaRepository(persistence.db);
@@ -166,31 +169,35 @@ export function buildApiModule(
     // Setup Calendar Sync Components
     const calendarProjectionRepo = new CalendarProjectionMongoRepository(persistence.db);
     const calendarCircuitBreaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 30000 });
-    
-    // Choose adapter based on environment
-    const isCalendarConfigured = config.GOOGLE_SERVICE_ACCOUNT_EMAIL && config.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
-    const calendarAdapter = isCalendarConfigured 
-      ? new GoogleCalendarAdapter(calendarCircuitBreaker, config)
-      : new CalendarSandboxAdapter(calendarCircuitBreaker);
-    
+
+    // Composio-based transport (single auth, managed OAuth)
+    const composioApiKey = process.env.COMPOSIO_API_KEY || '';
+    const composioUserId = process.env.COMPOSIO_USER_ID || 'karen_default_user';
+    const composioClient = new ComposioClient(composioApiKey, composioUserId);
+
+    // CalendarTool — sole external calendar boundary
+    const calendarTool = new CalendarTool(calendarCircuitBreaker, composioClient, calendarProjectionRepo);
+
+    // New CalendarAgent domain coordinator
+    const calendarAgentInstance = new CalendarAgent(calendarTool, calendarProjectionRepo);
+
+    // AgentRouter — deterministic dispatcher wired to InboundMessagePipeline
+    agentRouter = new AgentRouter(calendarAgentInstance);
+    (pipeline as any).agentRouter = agentRouter;
+
+    // Legacy CalendarSyncAgent still handles BullMQ-based outbound sync jobs
+    // Uses GoogleCalendarAdapter temporarily until CalendarSyncWorker is migrated to CalendarTool
     const syncJobQueue = new Queue('calendar_sync_jobs', { connection: messaging.redis });
     const calendarSyncAgent = new CalendarSyncAgent(calendarProjectionRepo, syncJobQueue);
-    
-    calendarSyncWorker = new CalendarSyncWorker(messaging.redis, calendarAdapter, calendarProjectionRepo);
-    calendarReconciliationWorker = new CalendarReconciliationWorker(calendarAdapter, calendarProjectionRepo);
-    calendarReconciliationWorker.start();
 
+    // BootSyncCoordinator — reads Google Calendar at startup via CalendarTool
     bootSyncCoordinator = new BootSyncCoordinator(
-      calendarAdapter,
+      calendarTool,
       calendarProjectionRepo,
       persistence.taskRepository,
       timerService,
       memoryService!
     );
-
-    calendarAgent = new CalendarAgent(calendarAdapter, calendarProjectionRepo);
-    // Late bind to pipeline
-    (pipeline as any).calendarAgent = calendarAgent;
 
     consumerRegistry = new BullMQConsumerRegistry(
       messaging.redis,

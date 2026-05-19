@@ -1,4 +1,4 @@
-import { ICalendarAdapter } from '../application/ports/ICalendarAdapter.js';
+import { CalendarTool } from '../tools/calendar/CalendarTool.js';
 import { CalendarProjectionMongoRepository } from '../infrastructure/persistence/mongo/repositories/CalendarProjectionMongoRepository.js';
 import { MemoryService } from '../application/ai/memory/MemoryService.js';
 import { HybridTimerService } from '../infrastructure/temporal/HybridTimerService.js';
@@ -11,7 +11,7 @@ import { RuntimeEventBus } from './RuntimeEventBus.js';
 
 export class BootSyncCoordinator {
   constructor(
-    private calendarAdapter: ICalendarAdapter,
+    private calendarTool: CalendarTool,
     private projectionRepo: CalendarProjectionMongoRepository,
     private taskRepo: TaskMongoRepository,
     private timerService: HybridTimerService,
@@ -28,8 +28,19 @@ export class BootSyncCoordinator {
       nextWeek.setDate(today.getDate() + 7);
 
       // 1. [DB pulles tasks]
-      const events = await this.calendarAdapter.listEvents(today, nextWeek, false);
-      console.log(chalk.green(`[DB pulles tasks] Fetched ${events.length} events from Google Calendar.`));
+      const toolResult = await this.calendarTool.listEvents({
+        userId: 'system_boot',
+        payload: {},
+        traceId: randomUUID(),
+        correlationId: randomUUID(),
+        isReplay: false,
+        isSandbox: !process.env.COMPOSIO_API_KEY,
+        idempotencyKey: `boot-sync-${today.getTime()}`,
+        timeMin: today,
+        timeMax: nextWeek,
+      });
+      const events = toolResult.success ? (toolResult.data ?? []) : [];
+      console.log(chalk.green(`[DB pulles tasks] Fetched ${events.length} events from Google Calendar via Composio.`));
 
       // 2. [synched calnder remainders]
       let newCount = 0;

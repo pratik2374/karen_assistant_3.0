@@ -32,10 +32,14 @@ const RuntimeConfigSchema = z.object({
   ENCRYPTION_KEY: z.string().min(32).optional(),
   ALLOWED_ORIGINS: z.string().default('*'),
   
-  // Google Calendar Integration
+  // Google Calendar Integration (Legacy — kept for reference)
   GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: z.string().optional(),
   GOOGLE_CALENDAR_ID: z.string().optional(),
+
+  // Composio Integration (production calendar + mail transport)
+  COMPOSIO_API_KEY: z.string().optional(),
+  COMPOSIO_USER_ID: z.string().default('karen_assistant_user'),
 
   // Feature Flags — runtime configurable without redeploy
   FEATURE_PROACTIVE_MODE: z.coerce.boolean().default(true),
