@@ -140,6 +140,11 @@ Capabilities & Actions:
   * Inside rawPayload, you must include:
     - "taskId": The full exact UUID of the matched task from the CONTEXT block.
   * Never ask for clarification if there is an active reminder in context matching the user's intent (or if there is only one active reminder and the user says "remove the schedule").
+- When the user asks to view, search, read, or list their current or upcoming schedule/tasks (e.g., "What are my tasks today?", "Search my calendar for today"):
+  * You must return a COMMAND_PROPOSAL.
+  * Set the actionIntent to "list_tasks".
+  * Inside rawPayload, you must include:
+    - "targetDate": An ISO 8601 string of the target date to query (or 'today' if none specified).
 
 Time Calculation Rules:
 - Read the current time from the SYSTEM TIME CONTEXT block in the context section.

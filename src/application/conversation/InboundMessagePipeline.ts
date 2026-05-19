@@ -200,6 +200,7 @@ export class InboundMessagePipeline {
             'cancel_schedule',
             'complete_schedule'
           ].includes(intentAction);
+          const isListTasks = intentAction === 'list_tasks' || intentAction === 'query_tasks';
 
           if (isCompleteOrCancel && this.persistence) {
             const taskId = payloadObj.taskId || payloadObj.id;
@@ -267,6 +268,45 @@ export class InboundMessagePipeline {
             }
             break;
           }
+
+          if (isListTasks && this.persistence) {
+            try {
+              const startOfDay = new Date();
+              startOfDay.setHours(0, 0, 0, 0);
+              
+              const projections = await this.persistence.db.collection('calendar_event_projection')
+                .find({ 
+                  createdBy: userId,
+                  startTime: { $gte: startOfDay }
+                })
+                .sort({ startTime: 1 })
+                .limit(10)
+                .toArray();
+
+              let replyText = "Here is your upcoming schedule:\n\n";
+              if (projections.length === 0) {
+                replyText = "Your calendar is completely clear! No upcoming tasks found.";
+              } else {
+                projections.forEach((p: any, index: number) => {
+                  const timeStr = new Date(p.startTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: p.timezone || 'Asia/Kolkata' });
+                  replyText += `${index + 1}. [${timeStr}] ${p.title}\n   ID: ${p.internalTaskId.split('-')[0]}\n\n`;
+                });
+                replyText += "Let me know if you'd like to cancel or reschedule any of these!";
+              }
+
+              await this.sendReply(userId, replyText, messageId);
+              
+              RuntimeEventBus.log('CALENDAR_QUERY', 'SYSTEM',
+                `Queried ${projections.length} active tasks for user ${userId}`,
+                traceId
+              );
+            } catch (err: any) {
+              console.error('[CalendarQuery] Failed:', err);
+              await this.sendReply(userId, "I'm sorry, I ran into an issue reading your calendar right now.", messageId);
+            }
+            break;
+          }
+          
           
           const title = payloadObj.title || 
                         payloadObj.task || 
