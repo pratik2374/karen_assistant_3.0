@@ -38,6 +38,15 @@ import { SagaObservabilityHook } from '../../infrastructure/observability/metric
 import { BullMQConsumerRegistry } from '../../infrastructure/messaging/bullmq/BullMQConsumerRegistry';
 import { Queue } from 'bullmq';
 
+// Calendar Sync Imports
+import { CalendarProjectionMongoRepository } from '../../infrastructure/persistence/mongo/repositories/CalendarProjectionMongoRepository.js';
+import { GoogleCalendarAdapter } from '../../infrastructure/external/calendar/GoogleCalendarAdapter.js';
+import { CalendarSandboxAdapter } from '../../infrastructure/external/calendar/CalendarSandboxAdapter.js';
+import { CalendarSyncAgent } from '../../application/calendar/CalendarSyncAgent.js';
+import { CalendarSyncWorker } from '../../infrastructure/workers/CalendarSyncWorker.js';
+import { CalendarReconciliationWorker } from '../../infrastructure/workers/CalendarReconciliationWorker.js';
+import { CircuitBreaker } from '../../infrastructure/resiliency/CircuitBreaker.js';
+
 export interface ApiModule {
   app: express.Application;
   timerService?: HybridTimerService;
@@ -114,6 +123,9 @@ export function buildApiModule(
   let timerService: HybridTimerService | undefined;
   let sagaDispatcher: SagaDispatcher | undefined;
   let consumerRegistry: BullMQConsumerRegistry | undefined;
+  
+  let calendarSyncWorker: CalendarSyncWorker | undefined;
+  let calendarReconciliationWorker: CalendarReconciliationWorker | undefined;
 
   if (persistence) {
     const sagaRepository = new MongoSagaRepository(persistence.db);
@@ -144,6 +156,23 @@ export function buildApiModule(
       sagaHook
     );
 
+    // Setup Calendar Sync Components
+    const calendarProjectionRepo = new CalendarProjectionMongoRepository(persistence.db);
+    const calendarCircuitBreaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 30000 });
+    
+    // Choose adapter based on environment
+    const isCalendarConfigured = config.GOOGLE_SERVICE_ACCOUNT_EMAIL && config.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY;
+    const calendarAdapter = isCalendarConfigured 
+      ? new GoogleCalendarAdapter(calendarCircuitBreaker, config)
+      : new CalendarSandboxAdapter(calendarCircuitBreaker);
+    
+    const syncJobQueue = new Queue('calendar_sync_jobs', { connection: messaging.redis });
+    const calendarSyncAgent = new CalendarSyncAgent(calendarProjectionRepo, syncJobQueue);
+    
+    calendarSyncWorker = new CalendarSyncWorker(messaging.redis, calendarAdapter, calendarProjectionRepo);
+    calendarReconciliationWorker = new CalendarReconciliationWorker(calendarAdapter, calendarProjectionRepo);
+    calendarReconciliationWorker.start();
+
     consumerRegistry = new BullMQConsumerRegistry(
       messaging.redis,
       sagaDispatcher,
@@ -151,7 +180,8 @@ export function buildApiModule(
       sagaRepository,
       persistence.taskRepository,
       whatsappAdapter,
-      messaging.idempotencyStore
+      messaging.idempotencyStore,
+      calendarSyncAgent
     );
 
     console.log('[API] Orchestration, Sagas, Timers, and BullMQ consumer singletons wired.');

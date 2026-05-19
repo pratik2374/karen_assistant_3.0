@@ -31,6 +31,11 @@ const RuntimeConfigSchema = z.object({
   // Security
   ENCRYPTION_KEY: z.string().min(32).optional(),
   ALLOWED_ORIGINS: z.string().default('*'),
+  
+  // Google Calendar Integration
+  GOOGLE_SERVICE_ACCOUNT_EMAIL: z.string().optional(),
+  GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: z.string().optional(),
+  GOOGLE_CALENDAR_ID: z.string().optional(),
 
   // Feature Flags — runtime configurable without redeploy
   FEATURE_PROACTIVE_MODE: z.coerce.boolean().default(true),
