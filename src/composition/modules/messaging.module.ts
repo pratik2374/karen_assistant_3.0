@@ -21,8 +21,10 @@ export interface MessagingModule {
 const QUEUE_NAMES = ['CRITICAL', 'HIGH', 'LOW', 'LOWEST'];
 
 export function buildMessagingModule(config: RuntimeConfig): MessagingModule {
-  const redisOpts = {
-    maxRetriesPerRequest: null // Required for BullMQ
+  const isTls = config.REDIS_URL?.startsWith('rediss://');
+  const redisOpts: any = {
+    maxRetriesPerRequest: null, // Required for BullMQ
+    ...(isTls && { tls: { rejectUnauthorized: false } })
   };
 
   const redis = config.REDIS_URL 
