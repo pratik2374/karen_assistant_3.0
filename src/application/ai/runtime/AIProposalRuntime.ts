@@ -45,7 +45,8 @@ export class AIProposalRuntime {
       const timeContext = {
         type: 'SYSTEM_CLOCK',
         currentUtcTime: now.toISOString(),
-        localTimeAsiaKolkata: now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' })
+        localTimeAsiaKolkata: now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata', timeZoneName: 'short' }),
+        CRITICAL_INSTRUCTION: "When generating textual responses or summaries for the user, ALWAYS format times in the user's local timezone (Asia/Kolkata). Do NOT show or use UTC time in textual responses."
       };
 
       const contextBlocks = [
