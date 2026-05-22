@@ -90,7 +90,9 @@ export async function bootstrap(): Promise<void> {
           persistence.outboxStore
         );
 
-        const userId = process.env.WHATSAPP_PHONE_NUMBER_ID || '917439707352';
+        // We use WHATSAPP_MY_PHONE_NUMBER as the target for Calendar reminders.
+        // If not set, it defaults to the known valid number from logs so we don't crash.
+        const userId = process.env.WHATSAPP_MY_PHONE_NUMBER || '917439707352';
         await calBootstrap.initialize(userId);
         console.log('[BOOTSTRAP] CalendarBootstrapService active — syncing today\'s events.');
       } catch (err: any) {
