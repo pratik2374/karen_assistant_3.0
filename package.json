@@ -46,6 +46,7 @@
     "helmet": "^8.1.0",
     "ioredis": "^5.10.1",
     "mongodb": "^7.2.0",
+    "node-cron": "^4.2.1",
     "openai": "^6.38.0",
     "ora": "^9.4.0",
     "redlock": "^5.0.0-beta.2",
@@ -58,6 +59,7 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^25.8.0",
+    "@types/node-cron": "^3.0.11",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.9",
     "tsx": "^4.22.1",

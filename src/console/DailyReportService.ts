@@ -1,6 +1,6 @@
 import { Db } from 'mongodb';
 import { OpenAI } from '@llamaindex/openai';
-import { TwilioWhatsAppAdapter } from '../infrastructure/whatsapp/TwilioAdapter.js';
+import { WhatsAppAdapter } from '../infrastructure/external/whatsapp/WhatsAppAdapter.js';
 import { RuntimeEventBus } from './RuntimeEventBus.js';
 import * as cron from 'node-cron';
 import { Queue } from 'bullmq';
@@ -8,7 +8,7 @@ import { Queue } from 'bullmq';
 export class DailyReportService {
   constructor(
     private db: Db,
-    private whatsappAdapter: TwilioWhatsAppAdapter,
+    private whatsappAdapter: WhatsAppAdapter,
     private reportQueue: Queue
   ) {}
 

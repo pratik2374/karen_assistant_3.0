@@ -36,7 +36,8 @@ import { CommandExecutionPipeline, ObservabilityStep, ReplayGuardStep } from '..
 import { SagaDispatcher } from '../../application/sagas/SagaDispatcher.js';
 import { SagaObservabilityHook } from '../../infrastructure/observability/metrics/SagaObservabilityHook.js';
 import { BullMQConsumerRegistry } from '../../infrastructure/messaging/bullmq/BullMQConsumerRegistry.js';
-import { Queue } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
+import { DailyReportService } from '../../console/DailyReportService.js';
 
 // Calendar Sync Imports
 import { CalendarProjectionMongoRepository } from '../../infrastructure/persistence/mongo/repositories/CalendarProjectionMongoRepository.js';
@@ -60,6 +61,7 @@ export interface ApiModule {
   sagaDispatcher?: SagaDispatcher;
   consumerRegistry?: BullMQConsumerRegistry;
   calendarBootstrapService?: CalendarBootstrapService;
+  dailyReportService?: any;
 }
 
 export function buildApiModule(
@@ -216,15 +218,13 @@ export function buildApiModule(
       calendarSyncAgent
     );
 
-    const { DailyReportService } = await import('../../console/DailyReportService.js');
-    const { Worker } = await import('bullmq');
     const dailyReportQueue = new Queue('daily_report_queue', { connection: messaging.redis });
     dailyReportService = new DailyReportService(persistence.db!, whatsappAdapter, dailyReportQueue);
     
     const dailyReportWorker = new Worker('daily_report_queue', async job => {
       if (job.name === 'deliver_daily_report') {
         const { userId, reportText } = job.data;
-        await whatsappAdapter.sendMessage({ to: userId, body: reportText, idempotencyKey: job.id }, false, false);
+        await whatsappAdapter.sendMessage({ to: userId, body: reportText, idempotencyKey: job.id! }, false, false);
       }
     }, { connection: messaging.redis });
 
