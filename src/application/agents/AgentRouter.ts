@@ -77,7 +77,7 @@ export class AgentRouter {
         RuntimeEventBus.log('AGENT_ROUTER', 'SYSTEM', `LLM Chose DocsAgent`, context.traceId);
         routedTo = 'DocsAgent';
         const rawUserQuery = context.payload?.userQuery || context.payload?.query || "";
-        const mergedPayload = { ...payload, userQuery: rawUserQuery };
+        const mergedPayload = { ...context.payload, ...payload, userQuery: rawUserQuery };
         subAgentResult = await this.docsAgent.execute({ ...context, intent: normalizedIntent, payload: mergedPayload });
         return `Successfully routed to DocsAgent. Summary: ${subAgentResult.summaryReport}`;
       },

@@ -287,7 +287,12 @@ export class InboundMessagePipeline {
                           lowercaseQuery.includes('removebg') || 
                           lowercaseQuery.includes('remove bg') ||
                           /\b(bg|clear bg)\b/i.test(lowercaseQuery);
-                          
+
+      const isLinkRetrieval = lowercaseQuery.includes('link') || 
+                              lowercaseQuery.includes('retrieve') ||
+                              lowercaseQuery.includes('get doc') ||
+                              lowercaseQuery.includes('show doc');
+                           
       if (isBgRemoval) {
         proposal = {
           proposalType: ProposalType.COMMAND_PROPOSAL,
@@ -302,6 +307,19 @@ export class InboundMessagePipeline {
           reasoning: 'Fast-tracked background removal intent detected.'
         };
         RuntimeEventBus.log('PIPELINE_FAST_TRACK_BG_REMOVAL', 'AI', 'Detected background removal request. Fast-tracking to DocsAgent.', traceId);
+      } else if (isLinkRetrieval) {
+        proposal = {
+          proposalType: ProposalType.COMMAND_PROPOSAL,
+          actionIntent: 'route_to_docs',
+          rawPayload: JSON.stringify({
+            action: 'RETRIEVE',
+            userQuery: queryToProcess,
+            query: queryToProcess
+          }),
+          confidence: 1.0,
+          reasoning: 'Fast-tracked document link retrieval intent detected.'
+        };
+        RuntimeEventBus.log('PIPELINE_FAST_TRACK_LINK_RETRIEVAL', 'AI', 'Detected document link retrieval request. Fast-tracking to DocsAgent.', traceId);
       } else {
         // Execute AI Cognition
         proposal = await this.aiRuntime.generateProposal(
