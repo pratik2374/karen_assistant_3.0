@@ -51,7 +51,6 @@ export class InboundMessagePipeline {
 
     // A. INCOMING STAGED MEDIA REPLY CORRELATION
     if (parentMessageId && db) {
-      // FIX QUERY: search by messageId, NOT mediaId
       const staged = await db.collection('staged_media').findOne({ messageId: parentMessageId });
       if (staged) {
         RuntimeEventBus.log('PIPELINE_REPLY_MATCH', 'TRANSPORT', `Incoming message correlates to staged media ID: ${staged.mediaId} | Status: ${staged.status}`, traceId);
@@ -65,33 +64,11 @@ export class InboundMessagePipeline {
           return;
         }
 
-        // Active staged media: Catalog permanently in vault
-        const vaultRepo = this.vaultRepo || InboundMessagePipeline.vaultRepoInstance;
-        if (vaultRepo) {
-          const docId = randomUUID();
-          const docName = messageText || staged.filename || `Document-${Date.now()}`;
-          const secureLink = staged.driveLink;
-
-          await vaultRepo.save({
-            docId,
-            name: docName,
-            aliases: [docName.toLowerCase()],
-            link: secureLink
-          });
-
-          await db.collection('staged_media').updateOne(
-            { mediaId: staged.mediaId },
-            { $set: { status: 'PROCESSED' } }
-          );
-
-          RuntimeEventBus.log('PIPELINE_REPLY_SAVED', 'TRANSPORT', `Staged media successfully cataloged in Vault. docId: ${docId}`, traceId);
-
-          const vaultPlaceholder = `{{VAULT_DOC:${docId}}}`;
-          await this.sendReply(userId, `Successfully registered! Secured inside your Vault:\n- Name: *${docName}*\n- Vault ID: *${docId}*\n- Shareable Link: ${vaultPlaceholder}`, messageId);
-          return;
-        } else {
-          throw new Error('DocumentVaultRepository instance not available to store permanent record!');
-        }
+        // Active staged media: Fast-track to LLM by masking its Drive link as {{MASKED_URL_1}}
+        const maskKey = `{{MASKED_URL_1}}`;
+        urlMasks[maskKey] = staged.driveLink;
+        finalQueryText = `${messageText || ''} ${maskKey}`;
+        RuntimeEventBus.log('PIPELINE_REPLY_FAST_TRACK', 'TRANSPORT', `Fast-tracking reply flow with staging Drive URL: ${staged.driveLink}`, traceId);
       }
     }
 
@@ -144,8 +121,8 @@ export class InboundMessagePipeline {
           await this.sendReply(userId, `Sir, what should I do with this ${mediaWord}? After 10 minutes I will delete it.`, messageId);
           return;
         } else {
-          // Direct permanent store via caption fast-track!
-          const maskKey = `{{MASKED_URL_99}}`;
+          // Direct permanent store via caption fast-track using {{MASKED_URL_1}}
+          const maskKey = `{{MASKED_URL_1}}`;
           urlMasks[maskKey] = viewLink;
           finalQueryText = `${messageText} ${maskKey}`;
           RuntimeEventBus.log('PIPELINE_CAPTION_FAST_TRACK', 'TRANSPORT', `Fast-tracking caption flow with temporary Drive URL: ${viewLink}`, traceId);
@@ -160,16 +137,18 @@ export class InboundMessagePipeline {
     // ZERO-LLM INBOUND URL MASKING
     let maskedMessageText = finalQueryText;
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    let matchCount = 0;
+    let matchCount = Object.keys(urlMasks).length;
+    
     maskedMessageText = maskedMessageText.replace(urlRegex, (match) => {
+      if (match.startsWith('{{MASKED_URL_')) return match;
       matchCount++;
       const maskKey = `{{MASKED_URL_${matchCount}}}`;
       urlMasks[maskKey] = match;
       return maskKey;
     });
 
-    if (matchCount > 0) {
-      RuntimeEventBus.log('PIPELINE_URL_MASK', 'SECURITY', `Masked ${matchCount} inbound URLs from LLM.`, traceId);
+    if (matchCount > Object.keys(urlMasks).length) {
+      RuntimeEventBus.log('PIPELINE_URL_MASK', 'SECURITY', `Masked inbound URLs from LLM.`, traceId);
     }
 
     const session = await this.sessionRepo.getSession(userId);
