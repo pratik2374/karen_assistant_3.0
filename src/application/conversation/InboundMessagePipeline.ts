@@ -30,16 +30,122 @@ export class InboundMessagePipeline {
     private vaultRepo?: DocumentVaultMongoRepository
   ) {}
 
+  public timerService?: any;
+
   public async process(
     userId: string,
     messageText: string,
     messageId: string,
-    traceId: string
+    traceId: string,
+    parentMessageId?: string,
+    mediaDetails?: any
   ): Promise<void> {
     RuntimeEventBus.log('PIPELINE_PROCESS_START', 'TRANSPORT',
-      `Pipeline process started for message "${messageText}"`,
+      `Pipeline process started for message "${messageText || ''}". Reply to: ${parentMessageId || 'none'} | Media: ${mediaDetails ? mediaDetails.type : 'none'}`,
       traceId
     );
+
+    const db = this.persistence?.db;
+
+    // A. INCOMING STAGED MEDIA REPLY CORRELATION
+    if (parentMessageId && db) {
+      const staged = await db.collection('staged_media').findOne({ mediaId: parentMessageId });
+      if (staged) {
+        RuntimeEventBus.log('PIPELINE_REPLY_MATCH', 'TRANSPORT', `Incoming message correlates to staged media ID: ${staged.mediaId} | Status: ${staged.status}`, traceId);
+
+        const tenMinutesMs = 10 * 60 * 1000;
+        const isExpired = staged.status === 'EXPIRED' || (Date.now() - staged.createdAt.getTime() > tenMinutesMs);
+
+        if (isExpired) {
+          RuntimeEventBus.log('PIPELINE_REPLY_EXPIRED', 'TRANSPORT', `Correlated staged media has expired. Sending Scenario 2 response.`, traceId);
+          await this.sendReply(userId, "Sorry Sir, I am punctual not like you, I deleted it after 10 minutes sharp.", messageId);
+          return;
+        }
+
+        // Active staged media: Catalog permanently in vault
+        const vaultRepo = this.vaultRepo || InboundMessagePipeline.vaultRepoInstance;
+        if (vaultRepo) {
+          const docId = randomUUID();
+          const docName = messageText || staged.filename || `Document-${Date.now()}`;
+          const secureLink = staged.driveLink;
+
+          await vaultRepo.save({
+            docId,
+            name: docName,
+            aliases: [docName.toLowerCase()],
+            link: secureLink
+          });
+
+          await db.collection('staged_media').updateOne(
+            { mediaId: staged.mediaId },
+            { $set: { status: 'PROCESSED' } }
+          );
+
+          RuntimeEventBus.log('PIPELINE_REPLY_SAVED', 'TRANSPORT', `Staged media successfully cataloged in Vault. docId: ${docId}`, traceId);
+
+          const vaultPlaceholder = `{{VAULT_DOC:${docId}}}`;
+          await this.sendReply(userId, `Successfully registered! Secured inside your Vault:\n- Name: *${docName}*\n- Vault ID: *${docId}*\n- Shareable Link: ${vaultPlaceholder}`, messageId);
+          return;
+        } else {
+          throw new Error('DocumentVaultRepository instance not available to store permanent record!');
+        }
+      }
+    }
+
+    // B. MEDIA INGRESS STAGING FLOW
+    if (mediaDetails && db) {
+      try {
+        const { buffer, mimeType } = await this.downloadWhatsAppMedia(mediaDetails.mediaId, traceId);
+        
+        const { fileId, viewLink } = await this.uploadToGoogleDrive(
+          mediaDetails.filename || `WhatsApp-Media-${Date.now()}`,
+          mimeType,
+          buffer,
+          traceId
+        );
+
+        const stagedRecord = {
+          mediaId: mediaDetails.mediaId,
+          userId,
+          messageId,
+          type: mediaDetails.type,
+          mimeType,
+          filename: mediaDetails.filename,
+          driveFileId: fileId,
+          driveLink: viewLink,
+          status: 'PENDING',
+          createdAt: new Date()
+        };
+        await db.collection('staged_media').insertOne(stagedRecord);
+
+        const timerService = this.timerService || (this as any).timerService;
+        if (timerService) {
+          const timerId = randomUUID();
+          await timerService.schedule({
+            timerId,
+            sagaId: mediaDetails.mediaId,
+            sagaType: 'StagedMediaCleanup',
+            actionIntent: 'TEMP_MEDIA_CLEANUP',
+            payload: { type: 'STAGED_MEDIA', driveFileId: fileId, mediaId: mediaDetails.mediaId },
+            targetWakeTime: new Date(Date.now() + 10 * 60 * 1000),
+            status: 'PENDING',
+            traceId,
+            correlationId: randomUUID()
+          });
+          RuntimeEventBus.log('PIPELINE_MEDIA_TIMER_SCHEDULED', 'TRANSPORT', `Temporary staging 10-minute cleanup timer scheduled. ID: ${timerId}`, traceId);
+        } else {
+          console.warn('[InboundPipeline] HybridTimerService not found. Cleanup timer skipped.');
+        }
+
+        const mediaWord = mediaDetails.type === 'image' ? 'image' : 'file';
+        await this.sendReply(userId, `Sir, what should I do with this ${mediaWord}? After 10 minutes I will delete it.`, messageId);
+        return;
+      } catch (err: any) {
+        console.error('[InboundPipeline] Media staging flow failed:', err);
+        await this.sendReply(userId, `Failed to stage attachment: ${err.message}`, messageId);
+        return;
+      }
+    }
 
     // ZERO-LLM INBOUND URL MASKING
     const urlMasks: Record<string, string> = {};
@@ -320,5 +426,120 @@ export class InboundMessagePipeline {
         console.error('[MemoryService] Background cipherizer error:', err);
       });
     }
+  }
+
+  private async downloadWhatsAppMedia(mediaId: string, traceId: string): Promise<{ buffer: Buffer; mimeType: string }> {
+    const token = process.env.WHATSAPP_PHONE_ACCESS_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
+    if (!token) {
+      throw new Error('Meta Graph API WhatsApp Access Token (WHATSAPP_PHONE_ACCESS_TOKEN or WHATSAPP_ACCESS_TOKEN) is missing!');
+    }
+
+    RuntimeEventBus.log('MEDIA_DOWNLOAD_START', 'TRANSPORT', `Fetching media metadata for: ${mediaId}`, traceId);
+    
+    const metaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (!metaRes.ok) {
+      const errBody = await metaRes.text().catch(() => '');
+      throw new Error(`Meta Graph API media metadata fetch failed: HTTP ${metaRes.status} | ${errBody}`);
+    }
+
+    const metadata: any = await metaRes.json();
+    const downloadUrl = metadata.url;
+    const mimeType = metadata.mime_type || 'application/octet-stream';
+
+    if (!downloadUrl) {
+      throw new Error(`Meta Graph API returned no download URL for mediaId: ${mediaId}`);
+    }
+
+    RuntimeEventBus.log('MEDIA_DOWNLOAD_URL_RETRIEVED', 'TRANSPORT', `Downloading media from CDN URL`, traceId);
+
+    const fileRes = await fetch(downloadUrl, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (!fileRes.ok) {
+      throw new Error(`Meta Graph API media binary download failed: HTTP ${fileRes.status}`);
+    }
+
+    const arrayBuffer = await fileRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    RuntimeEventBus.log('MEDIA_DOWNLOAD_SUCCESS', 'TRANSPORT', `Successfully downloaded media buffer. Size: ${buffer.length} bytes`, traceId);
+    
+    return { buffer, mimeType };
+  }
+
+  private async uploadToGoogleDrive(
+    filename: string,
+    mimeType: string,
+    buffer: Buffer,
+    traceId: string
+  ): Promise<{ fileId: string; viewLink: string }> {
+    const { google } = await import('googleapis');
+    
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+    if (!clientId || !clientSecret || !refreshToken) {
+      throw new Error('Google OAuth credentials (ID, Secret, or Refresh Token) are missing from your .env file!');
+    }
+
+    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000');
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
+    const drive = google.drive({ version: 'v3', auth: oauth2Client });
+
+    RuntimeEventBus.log('DRIVE_UPLOAD_START', 'TRANSPORT', `Uploading file "${filename}" to Google Drive`, traceId);
+
+    const { Readable } = await import('stream');
+    const mediaStream = new Readable();
+    mediaStream.push(buffer);
+    mediaStream.push(null);
+
+    const fileMetadata: any = {
+      name: filename
+    };
+    if (folderId) {
+      fileMetadata.parents = [folderId];
+    }
+
+    const response = await drive.files.create({
+      requestBody: fileMetadata,
+      media: {
+        mimeType: mimeType,
+        body: mediaStream
+      },
+      fields: 'id, name, webViewLink'
+    });
+
+    const fileId = response.data.id;
+    if (!fileId) {
+      throw new Error('Google Drive upload response did not contain a file ID.');
+    }
+
+    try {
+      await drive.permissions.create({
+        fileId: fileId,
+        requestBody: {
+          role: 'reader',
+          type: 'anyone'
+        }
+      });
+      RuntimeEventBus.log('DRIVE_PERMISSIONS_SUCCESS', 'TRANSPORT', `Shareable permissions configured for Drive File ID: ${fileId}`, traceId);
+    } catch (permErr: any) {
+      console.warn(`[DriveUpload] Failed to set permissions (non-fatal): ${permErr.message}`);
+    }
+
+    const viewLink = `https://drive.google.com/file/d/${fileId}/view?usp=drivesdk`;
+    RuntimeEventBus.log('DRIVE_UPLOAD_SUCCESS', 'TRANSPORT', `File uploaded successfully. ID: ${fileId} | Link: ${viewLink}`, traceId);
+
+    return { fileId, viewLink };
   }
 }

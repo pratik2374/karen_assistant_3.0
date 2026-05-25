@@ -73,15 +73,10 @@ export async function bootstrap(): Promise<void> {
         const { CalendarTool } = await import('../tools/calendar/CalendarTool.js');
         const { CalendarProjectionMongoRepository } = await import('../infrastructure/persistence/mongo/repositories/CalendarProjectionMongoRepository.js');
         const { CircuitBreaker } = await import('../infrastructure/resiliency/CircuitBreaker.js');
-        const { ComposioClient } = await import('../infrastructure/composio/ComposioClient.js');
 
-        const composio = new ComposioClient(
-          process.env.COMPOSIO_API_KEY || '',
-          process.env.COMPOSIO_USER_ID || 'karen'
-        );
         const calCircuit = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 30000 });
         const calProjRepo = new CalendarProjectionMongoRepository(persistence.db);
-        const calTool = new CalendarTool(calCircuit, composio, calProjRepo);
+        const calTool = new CalendarTool(calCircuit, null, calProjRepo);
 
         const calBootstrap = new CalendarBootstrapService(
           calTool,

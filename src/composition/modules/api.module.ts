@@ -54,7 +54,6 @@ import { DocsAgent } from '../../agents/docs/DocsAgent.js';
 import { VaultController } from '../../api/v1/controllers/VaultController.js';
 
 // New Multi-Agent Architecture
-import { ComposioClient } from '../../infrastructure/composio/ComposioClient.js';
 import { CalendarTool } from '../../tools/calendar/CalendarTool.js';
 import { CalendarAgent } from '../../agents/calendar/CalendarAgent.js';
 import { SystemOpsAgent } from '../../agents/system/SystemOpsAgent.js';
@@ -156,6 +155,7 @@ export function buildApiModule(
     const timerQueue = new Queue('timer_wakeup', { connection: messaging.redis });
     
     timerService = new HybridTimerService(timerStore, timerQueue);
+    (pipeline as any).timerService = timerService;
 
     const reminderCommandHandler = new ReminderCommandHandler(
       persistence.reminderRepository,
@@ -183,13 +183,8 @@ export function buildApiModule(
     const calendarProjectionRepo = new CalendarProjectionMongoRepository(persistence.db);
     const calendarCircuitBreaker = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 30000 });
 
-    // Composio-based transport (single auth, managed OAuth)
-    const composioApiKey = process.env.COMPOSIO_API_KEY || '';
-    const composioUserId = process.env.COMPOSIO_USER_ID || 'karen_default_user';
-    const composioClient = new ComposioClient(composioApiKey, composioUserId);
-
-    // CalendarTool — sole external calendar boundary
-    const calendarTool = new CalendarTool(calendarCircuitBreaker, composioClient, calendarProjectionRepo);
+    // CalendarTool — sole external calendar boundary (natively replaces Composio)
+    const calendarTool = new CalendarTool(calendarCircuitBreaker, null, calendarProjectionRepo);
 
     // New CalendarAgent domain coordinator
     const calendarAgentInstance = new CalendarAgent(calendarTool, calendarProjectionRepo);
@@ -202,10 +197,11 @@ export function buildApiModule(
       const calendarProjectionRepo = new CalendarProjectionMongoRepository(persistence.db);
       vaultRepo = new DocumentVaultMongoRepository(persistence.db);
       docsAgent = new DocsAgent(vaultRepo);
+      (docsAgent as any).timerService = timerService;
 
       agentRouter = new AgentRouter(
         new CalendarAgent(
-          new CalendarTool(calendarCircuitBreaker, composioClient, calendarProjectionRepo),
+          new CalendarTool(calendarCircuitBreaker, null, calendarProjectionRepo),
           calendarProjectionRepo
         ),
         new SystemOpsAgent(persistence, application.taskCommandExecutor),
@@ -225,7 +221,7 @@ export function buildApiModule(
     const calendarSyncAgent = new CalendarSyncAgent(new CalendarProjectionMongoRepository(persistence.db), syncJobQueue);
 
     calendarBootstrapService = new CalendarBootstrapService(
-      new CalendarTool(calendarCircuitBreaker, composioClient, new CalendarProjectionMongoRepository(persistence.db)),
+      new CalendarTool(calendarCircuitBreaker, null, new CalendarProjectionMongoRepository(persistence.db)),
       new CalendarProjectionMongoRepository(persistence.db),
       persistence.taskRepository,
       persistence.outboxStore,
@@ -240,7 +236,8 @@ export function buildApiModule(
       persistence.taskRepository,
       whatsappAdapter,
       messaging.idempotencyStore,
-      calendarSyncAgent
+      calendarSyncAgent,
+      persistence.db
     );
 
     if (vaultRepo) {

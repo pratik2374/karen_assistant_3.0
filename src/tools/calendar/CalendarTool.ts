@@ -1,32 +1,61 @@
 import { ToolExecutionGateway } from '../../infrastructure/external/gateway/ToolExecutionGateway.js';
 import { CircuitBreaker } from '../../infrastructure/resiliency/CircuitBreaker.js';
-import { ComposioClient, CalendarEventInput, ComposioCalendarEvent } from '../../infrastructure/composio/ComposioClient.js';
 import { CalendarProjectionMongoRepository } from '../../infrastructure/persistence/mongo/repositories/CalendarProjectionMongoRepository.js';
 import { CalendarSyncState } from '../../domain/calendar/CalendarEventProjection.js';
 import { RuntimeEventBus } from '../../console/RuntimeEventBus.js';
 import { ToolInput, ToolResult } from '../base/ITool.js';
 import { randomUUID } from 'crypto';
+import { google } from 'googleapis';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CalendarTool — The ONLY external calendar integration boundary.
-//
-// GOVERNANCE RULES:
-//  - All calls pass through ToolExecutionGateway (circuit breaker + replay guard).
-//  - Every mutation syncs the shadow projection AFTER successful API call.
-//  - Sandbox mode returns mocked empty results, no API calls made.
-//  - Composio is the ONLY external transport layer (no Google SDK direct access).
-//  - Karen's shadow projection remains the canonical internal source of truth.
-// ─────────────────────────────────────────────────────────────────────────────
+export interface CalendarEventInput {
+  summary: string;
+  description?: string;
+  startDateTime: string;  // ISO 8601
+  endDateTime: string;    // ISO 8601
+  timezone?: string;
+  location?: string;
+  calendarId?: string;
+}
+
+export interface ComposioCalendarEvent {
+  id?: string;
+  summary?: string;
+  description?: string;
+  start?: { dateTime?: string; date?: string; timeZone?: string };
+  end?: { dateTime?: string; date?: string; timeZone?: string };
+  location?: string;
+  status?: string;
+  htmlLink?: string;
+  etag?: string;
+}
 
 export class CalendarTool extends ToolExecutionGateway {
   readonly name = 'CalendarTool';
 
   constructor(
     circuitBreaker: CircuitBreaker,
-    public readonly composio: ComposioClient,
+    public readonly composio: any, // Ignored, kept for backward-compatibility in injection
     private projectionRepo: CalendarProjectionMongoRepository
   ) {
     super(circuitBreaker);
+  }
+
+  private getCalendarClient() {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+    const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
+
+    if (!clientId || !clientSecret || !refreshToken) {
+      throw new Error('Google OAuth credentials (ID, Secret, or Refresh Token) are missing from your .env file!');
+    }
+
+    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000');
+    oauth2Client.setCredentials({ refresh_token: refreshToken });
+    return {
+      calendarClient: google.calendar({ version: 'v3', auth: oauth2Client }),
+      calendarId
+    };
   }
 
   // ── List Events ───────────────────────────────────────────────────────────
@@ -50,12 +79,32 @@ export class CalendarTool extends ToolExecutionGateway {
         requiredScopes: ['READ_CALENDAR'],
       },
       async () => {
-        const events = await this.composio.listEvents(input.timeMin, input.timeMax, input.traceId);
+        const { calendarClient, calendarId } = this.getCalendarClient();
+        const response = await calendarClient.events.list({
+          calendarId,
+          timeMin: input.timeMin.toISOString(),
+          timeMax: input.timeMax.toISOString(),
+          singleEvents: true,
+          orderBy: 'startTime',
+        });
+        const events = response.data.items || [];
+        const mapped = events.map(e => ({
+          id: e.id || undefined,
+          summary: e.summary || undefined,
+          description: e.description || undefined,
+          start: e.start ? { dateTime: e.start.dateTime || undefined, date: e.start.date || undefined, timeZone: e.start.timeZone || undefined } : undefined,
+          end: e.end ? { dateTime: e.end.dateTime || undefined, date: e.end.date || undefined, timeZone: e.end.timeZone || undefined } : undefined,
+          location: e.location || undefined,
+          status: e.status || undefined,
+          htmlLink: e.htmlLink || undefined,
+          etag: e.etag || undefined,
+        }));
+
         RuntimeEventBus.log('TOOL_RESULT', 'SYSTEM',
-          `CalendarTool.listEvents → ${events.length} events (${Date.now() - start}ms)`,
+          `CalendarTool.listEvents → ${mapped.length} events (${Date.now() - start}ms)`,
           input.traceId
         );
-        return { success: true, data: events, latencyMs: Date.now() - start };
+        return { success: true, data: mapped, latencyMs: Date.now() - start };
       },
       async () => {
         RuntimeEventBus.log('TOOL_RESULT', 'SYSTEM', `CalendarTool.listEvents [SANDBOX/REPLAY] → []`, input.traceId);
@@ -85,7 +134,35 @@ export class CalendarTool extends ToolExecutionGateway {
         requiredScopes: ['WRITE_CALENDAR'],
       },
       async () => {
-        const event = await this.composio.createEvent(input.event, input.traceId);
+        const { calendarClient, calendarId } = this.getCalendarClient();
+        const response = await calendarClient.events.insert({
+          calendarId: input.event.calendarId || calendarId,
+          requestBody: {
+            summary: input.event.summary,
+            description: input.event.description,
+            location: input.event.location,
+            start: {
+              dateTime: input.event.startDateTime,
+              timeZone: input.event.timezone || 'Asia/Kolkata'
+            },
+            end: {
+              dateTime: input.event.endDateTime,
+              timeZone: input.event.timezone || 'Asia/Kolkata'
+            }
+          }
+        });
+        const e = response.data;
+        const event: ComposioCalendarEvent = {
+          id: e.id || undefined,
+          summary: e.summary || undefined,
+          description: e.description || undefined,
+          start: e.start ? { dateTime: e.start.dateTime || undefined, date: e.start.date || undefined, timeZone: e.start.timeZone || undefined } : undefined,
+          end: e.end ? { dateTime: e.end.dateTime || undefined, date: e.end.date || undefined, timeZone: e.end.timeZone || undefined } : undefined,
+          location: e.location || undefined,
+          status: e.status || undefined,
+          htmlLink: e.htmlLink || undefined,
+          etag: e.etag || undefined,
+        };
 
         // Sync shadow projection immediately after successful creation
         if (event.id) {
@@ -138,7 +215,41 @@ export class CalendarTool extends ToolExecutionGateway {
         requiredScopes: ['WRITE_CALENDAR'],
       },
       async () => {
-        const event = await this.composio.updateEvent(input.eventId, input.event, input.traceId);
+        const { calendarClient, calendarId } = this.getCalendarClient();
+        const requestBody: any = {};
+        if (input.event.summary !== undefined) requestBody.summary = input.event.summary;
+        if (input.event.description !== undefined) requestBody.description = input.event.description;
+        if (input.event.location !== undefined) requestBody.location = input.event.location;
+        if (input.event.startDateTime !== undefined) {
+          requestBody.start = {
+            dateTime: input.event.startDateTime,
+            timeZone: input.event.timezone || 'Asia/Kolkata'
+          };
+        }
+        if (input.event.endDateTime !== undefined) {
+          requestBody.end = {
+            dateTime: input.event.endDateTime,
+            timeZone: input.event.timezone || 'Asia/Kolkata'
+          };
+        }
+
+        const response = await calendarClient.events.patch({
+          calendarId: input.event.calendarId || calendarId,
+          eventId: input.eventId,
+          requestBody
+        });
+        const e = response.data;
+        const event: ComposioCalendarEvent = {
+          id: e.id || undefined,
+          summary: e.summary || undefined,
+          description: e.description || undefined,
+          start: e.start ? { dateTime: e.start.dateTime || undefined, date: e.start.date || undefined, timeZone: e.start.timeZone || undefined } : undefined,
+          end: e.end ? { dateTime: e.end.dateTime || undefined, date: e.end.date || undefined, timeZone: e.end.timeZone || undefined } : undefined,
+          location: e.location || undefined,
+          status: e.status || undefined,
+          htmlLink: e.htmlLink || undefined,
+          etag: e.etag || undefined,
+        };
 
         if (event.id) {
           await this.upsertShadowProjection(event, input.userId, input.traceId);
@@ -177,7 +288,11 @@ export class CalendarTool extends ToolExecutionGateway {
         requiredScopes: ['WRITE_CALENDAR'],
       },
       async () => {
-        await this.composio.deleteEvent(input.eventId, input.traceId);
+        const { calendarClient, calendarId } = this.getCalendarClient();
+        await calendarClient.events.delete({
+          calendarId,
+          eventId: input.eventId,
+        });
 
         // Archive projection
         const existing = await this.projectionRepo.findByGoogleEventId(input.eventId);
@@ -219,12 +334,32 @@ export class CalendarTool extends ToolExecutionGateway {
         requiredScopes: ['READ_CALENDAR'],
       },
       async () => {
-        const events = await this.composio.findEvents(input.query, input.timeMin, input.timeMax, input.traceId);
+        const { calendarClient, calendarId } = this.getCalendarClient();
+        const response = await calendarClient.events.list({
+          calendarId,
+          q: input.query,
+          timeMin: input.timeMin.toISOString(),
+          timeMax: input.timeMax.toISOString(),
+          singleEvents: true,
+        });
+        const events = response.data.items || [];
+        const mapped = events.map(e => ({
+          id: e.id || undefined,
+          summary: e.summary || undefined,
+          description: e.description || undefined,
+          start: e.start ? { dateTime: e.start.dateTime || undefined, date: e.start.date || undefined, timeZone: e.start.timeZone || undefined } : undefined,
+          end: e.end ? { dateTime: e.end.dateTime || undefined, date: e.end.date || undefined, timeZone: e.end.timeZone || undefined } : undefined,
+          location: e.location || undefined,
+          status: e.status || undefined,
+          htmlLink: e.htmlLink || undefined,
+          etag: e.etag || undefined,
+        }));
+
         RuntimeEventBus.log('TOOL_RESULT', 'SYSTEM',
-          `CalendarTool.findEvents → ${events.length} results (${Date.now() - start}ms)`,
+          `CalendarTool.findEvents → ${mapped.length} results (${Date.now() - start}ms)`,
           input.traceId
         );
-        return { success: true, data: events, latencyMs: Date.now() - start };
+        return { success: true, data: mapped, latencyMs: Date.now() - start };
       },
       async () => {
         return { success: true, data: [], latencyMs: 0 };
@@ -269,7 +404,6 @@ export class CalendarTool extends ToolExecutionGateway {
         traceId
       );
     } catch (err: any) {
-      // Non-fatal: projection sync failure should not block the primary tool result
       console.error('[CalendarTool] Shadow projection upsert failed:', err.message);
     }
   }

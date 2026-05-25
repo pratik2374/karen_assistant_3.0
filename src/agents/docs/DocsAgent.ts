@@ -177,15 +177,170 @@ export class DocsAgent implements IAgent {
         }
       );
 
+      const removeBgTool = FunctionTool.from(
+        async (args: { imageUrlPlaceholder: string; format?: string }) => {
+          RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Remove background tool called for URL: ${args.imageUrlPlaceholder} | Format: ${args.format || 'png'}`, context.traceId);
+          
+          const realUrl = (context as any).urlMasks?.[args.imageUrlPlaceholder] || args.imageUrlPlaceholder;
+          if (!realUrl) {
+            throw new Error(`Failed to process image. URL placeholder "${args.imageUrlPlaceholder}" is invalid.`);
+          }
+
+          const apiKey = process.env.REMOVE_BG_API_KEY;
+          if (!apiKey) {
+            throw new Error('REMOVE_BG_API_KEY is missing from your environment variables.');
+          }
+
+          // 1. Download source image from target URL
+          RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Downloading source image from URL`, context.traceId);
+          const dlRes = await fetch(realUrl);
+          if (!dlRes.ok) {
+            throw new Error(`Failed to download source image from URL: HTTP ${dlRes.status}`);
+          }
+          const imageArrayBuffer = await dlRes.arrayBuffer();
+          const imageBuffer = Buffer.from(imageArrayBuffer);
+
+          // 2. Call remove.bg API
+          RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Calling remove.bg API to process image`, context.traceId);
+          const formData = new FormData();
+          formData.append('size', 'auto');
+          formData.append('image_file', new Blob([imageBuffer]));
+          if (args.format) {
+            formData.append('format', args.format.toLowerCase()); // png, jpg, webp, zip
+          }
+
+          const removeRes = await fetch('https://api.remove.bg/v1.0/removebg', {
+            method: 'POST',
+            headers: {
+              'X-Api-Key': apiKey
+            },
+            body: formData
+          });
+
+          if (!removeRes.ok) {
+            const errText = await removeRes.text().catch(() => '');
+            throw new Error(`remove.bg API call failed: HTTP ${removeRes.status} | ${errText}`);
+          }
+
+          const processedBuffer = Buffer.from(await removeRes.arrayBuffer());
+          RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Background removed successfully. Processed buffer size: ${processedBuffer.length} bytes`, context.traceId);
+
+          // 3. Upload background-removed image to temporary folder in Google Drive
+          const ext = (args.format || 'png').toLowerCase();
+          const filename = `no-bg-${Date.now()}.${ext === 'zip' ? 'zip' : ext}`;
+          const mimeType = ext === 'zip' ? 'application/zip' : `image/${ext}`;
+          
+          const { google } = await import('googleapis');
+          const clientId = process.env.GOOGLE_CLIENT_ID;
+          const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+          const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+          const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID;
+
+          if (!clientId || !clientSecret || !refreshToken) {
+            throw new Error('Google OAuth credentials are missing from your .env file!');
+          }
+
+          const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000');
+          oauth2Client.setCredentials({ refresh_token: refreshToken });
+          const drive = google.drive({ version: 'v3', auth: oauth2Client });
+
+          const { Readable } = await import('stream');
+          const mediaStream = new Readable();
+          mediaStream.push(processedBuffer);
+          mediaStream.push(null);
+
+          const fileMetadata: any = { name: filename };
+          if (folderId) {
+            fileMetadata.parents = [folderId];
+          }
+
+          const uploadResponse = await drive.files.create({
+            requestBody: fileMetadata,
+            media: {
+              mimeType,
+              body: mediaStream
+            },
+            fields: 'id, name, webViewLink'
+          });
+
+          const fileId = uploadResponse.data.id;
+          if (!fileId) {
+            throw new Error('Google Drive upload response did not return a file ID.');
+          }
+
+          // Make publicly readable
+          try {
+            await drive.permissions.create({
+              fileId: fileId,
+              requestBody: {
+                role: 'reader',
+                type: 'anyone'
+              }
+            });
+          } catch (permErr: any) {
+            console.warn(`[RemoveBgTool] Failed to configure Drive permission: ${permErr.message}`);
+          }
+
+          const viewLink = `https://drive.google.com/file/d/${fileId}/view?usp=drivesdk`;
+
+          // 4. Schedule standard 10-minute cleanup timer using HybridTimerService
+          const timerService = (this as any).timerService;
+          if (timerService) {
+            await timerService.schedule({
+              timerId: randomUUID(),
+              sagaId: fileId,
+              sagaType: 'BgRemovedCleanup',
+              actionIntent: 'TEMP_MEDIA_CLEANUP',
+              payload: { type: 'BG_REMOVED_FILE', driveFileId: fileId },
+              targetWakeTime: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+              status: 'PENDING',
+              traceId: context.traceId,
+              correlationId: randomUUID()
+            });
+            RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Scheduled 10-minute temporary file cleanup timer for Drive file: ${fileId}`, context.traceId);
+          }
+
+          // 5. Store metadata in permanent Vault repository
+          const docId = randomUUID();
+          await this.vaultRepo.save({
+            docId,
+            name: `Processed Background-Removed Image (${filename})`,
+            aliases: [`no-bg-${fileId}`, filename.toLowerCase()],
+            link: viewLink
+          });
+
+          const placeholder = `{{VAULT_DOC:${docId}}}`;
+          return {
+            status: 'SUCCESS',
+            message: 'Background successfully removed! Saved in Google Drive staging.',
+            driveLink: viewLink,
+            vaultPlaceholder: placeholder,
+            docId: docId
+          };
+        },
+        {
+          name: 'remove_image_background',
+          description: 'Remove the background of an image. Returns a secure vault link placeholder to the background-removed image, which will be automatically deleted from Google Drive after 10 minutes.',
+          parameters: {
+            type: 'object',
+            properties: {
+              imageUrlPlaceholder: { type: 'string', description: 'The {{MASKED_URL_x}} placeholder representing the image URL, or the raw image URL.' },
+              format: { type: 'string', enum: ['PNG', 'JPG', 'WebP', 'ZIP'], description: 'Optional. Output image format. Defaults to PNG.' }
+            },
+            required: ['imageUrlPlaceholder']
+          }
+        }
+      );
+
       // Initialize LlamaIndex LLM & Agent
       const llm = new OpenAI({
         apiKey,
-        model: 'gpt-5.4-mini',
+        model: 'gpt-4o-mini',
         temperature: 0,
       });
 
       const agent = new OpenAIAgent({
-        tools: [listTool, searchTool, storeTool, deleteTool],
+        tools: [listTool, searchTool, storeTool, deleteTool, removeBgTool],
         llm,
         verbose: true,
       });
@@ -195,13 +350,17 @@ export class DocsAgent implements IAgent {
       const query = `
 You are the Karen Secure Document Vault Agent.
 Your job is to manage the user's personal documents (such as Aadhar, PAN, Passports, etc.) in the secure vault.
-You have access to tools to list all documents, search documents, store/update a document, and delete a document.
+You have access to tools to list all documents, search documents, store/update a document, delete a document, and remove image backgrounds.
 
 CRITICAL PRIVACY RULE:
 - Document links are 100% hidden from you. The database tools will only return document metadata (ID, name, and aliases) and will never return the raw link.
 - When retrieving or referring to a document, you MUST NEVER attempt to guess or output a raw URL link. Instead, you MUST output a secure placeholder in the exact format: {{VAULT_DOC:docId}} where "docId" is the exact ID of the document (e.g. {{VAULT_DOC:123-456}}).
 - The outbound messaging pipeline will automatically intercept this placeholder and safely inject the actual URL.
 - When saving or updating a document, the user's raw URL has been masked as a placeholder like {{MASKED_URL_1}}. You must pass this exact placeholder as the "urlPlaceholder" argument to the store_vault_document tool.
+
+BACKGROUND REMOVAL INSTRUCTIONS:
+- If the user asks to remove the background of an image or a URL, call the remove_image_background tool.
+- It will automatically process the image and return a secure Vault placeholder like {{VAULT_DOC:docId}}. You must report this placeholder to the user in your final message so they can download it. Mention that the temporary file will be automatically deleted from Google Drive after 10 minutes.
 
 SMART UPDATE BEHAVIOR:
 - If the user asks to save, upload, or update a document (e.g. "update my aadhar link to https://..."), first search or list the vault documents to check if a document with a matching name or alias (e.g., "Aadhar" or "aadhar") already exists.

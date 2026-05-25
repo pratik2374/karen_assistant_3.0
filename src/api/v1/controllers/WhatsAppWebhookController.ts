@@ -89,31 +89,49 @@ export class WhatsAppWebhookController {
         return;
       }
 
+      const messageType = message.type;
       const messageId = message.id;
       const userId = contact?.wa_id || message.from;
+      
       const messageText = message.text?.body;
+      const caption = message.image?.caption || message.document?.caption || '';
+      const textToProcess = messageText || caption || '';
+
+      const parentMessageId = message.context?.id;
+
+      let mediaDetails: any = null;
+      if (messageType === 'image' && message.image) {
+        mediaDetails = {
+          type: 'image',
+          mediaId: message.image.id,
+          mimeType: message.image.mime_type,
+          filename: `uploaded-image-${Date.now()}`
+        };
+      } else if (messageType === 'document' && message.document) {
+        mediaDetails = {
+          type: 'document',
+          mediaId: message.document.id,
+          mimeType: message.document.mime_type,
+          filename: message.document.filename || `uploaded-document-${Date.now()}`
+        };
+      }
 
       RuntimeEventBus.log('WEBHOOK_RECEIVED', 'TRANSPORT',
-        `Inbound message from ${userId}: "${messageText?.substring(0, 40)}..."`,
+        `Inbound ${messageType} from ${userId}. Text present: ${!!textToProcess}. Reply to: ${parentMessageId || 'none'}`,
         req.traceId, { messageId, userId }
       );
 
       // Immediately return 200 OK to WhatsApp to prevent retries and timeouts
       res.status(200).json({ status: 'received' });
 
-      RuntimeEventBus.log('CONTROLLER_DISPATCH_CHECK', 'TRANSPORT',
-        `Dispatch Check | User: ${userId} | Text present: ${!!messageText} | Length: ${messageText?.length || 0}`,
-        req.traceId
-      );
-
       // Async Background Dispatch
-      if (messageText && userId) {
+      if ((textToProcess || mediaDetails) && userId) {
         RuntimeEventBus.log('CONTROLLER_PIPELINE_INVOKE_START', 'TRANSPORT',
           `Invoking message pipeline async for messageId: ${messageId}`,
           req.traceId
         );
 
-        this.pipeline.process(userId, messageText, messageId, req.traceId)
+        this.pipeline.process(userId, textToProcess, messageId, req.traceId, parentMessageId, mediaDetails)
           .then(() => {
             RuntimeEventBus.log('CONTROLLER_PIPELINE_INVOKE_SUCCESS', 'TRANSPORT',
               `Successfully processed message pipeline for messageId: ${messageId}`,
@@ -129,7 +147,7 @@ export class WhatsAppWebhookController {
           });
       } else {
         RuntimeEventBus.log('CONTROLLER_PIPELINE_SKIPPED', 'TRANSPORT',
-          `Pipeline skipped: messageText or userId missing. Text: "${messageText}", User: "${userId}"`,
+          `Pipeline skipped: text and media missing. User: "${userId}"`,
           req.traceId
         );
       }

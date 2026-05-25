@@ -25,7 +25,8 @@ export class BullMQConsumerRegistry {
     private taskRepository: TaskMongoRepository,
     private whatsappAdapter: WhatsAppAdapter,
     private idempotencyStore: RedisIdempotencyStore,
-    private calendarSyncAgent?: CalendarSyncAgent
+    private calendarSyncAgent?: CalendarSyncAgent,
+    private db?: any
   ) {}
 
   public async start(): Promise<void> {
@@ -57,6 +58,41 @@ export class BullMQConsumerRegistry {
             timer.traceId,
             { timerId, sagaId: timer.sagaId }
           );
+
+          // Handle temporary media cleanup directly (non-saga intent)
+          if (timer.actionIntent === 'TEMP_MEDIA_CLEANUP') {
+            const { type, driveFileId, mediaId } = timer.payload || {};
+            RuntimeEventBus.log('TIMER_CLEANUP_EXECUTE', 'TIMER', `Temporary media cleanup timer fired for type: ${type} | File ID: ${driveFileId}`, timer.traceId);
+            
+            // 1. Delete from Google Drive natively
+            if (driveFileId) {
+              try {
+                const { google } = await import('googleapis');
+                const clientId = process.env.GOOGLE_CLIENT_ID;
+                const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+                const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+                if (clientId && clientSecret && refreshToken) {
+                  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, 'http://localhost:3000');
+                  oauth2Client.setCredentials({ refresh_token: refreshToken });
+                  const drive = google.drive({ version: 'v3', auth: oauth2Client });
+                  await drive.files.delete({ fileId: driveFileId });
+                  RuntimeEventBus.log('TIMER_CLEANUP_DRIVE_DELETED', 'TIMER', `Drive file ${driveFileId} successfully deleted.`, timer.traceId);
+                }
+              } catch (driveErr: any) {
+                console.warn(`[CleanupWorker] Failed to delete Drive file ${driveFileId}: ${driveErr.message}`);
+              }
+            }
+
+            // 2. Update status in MongoDB
+            if (type === 'STAGED_MEDIA' && mediaId && this.db) {
+              await this.db.collection('staged_media').updateOne(
+                { mediaId: mediaId },
+                { $set: { status: 'EXPIRED' } }
+              );
+              RuntimeEventBus.log('TIMER_CLEANUP_DB_UPDATED', 'TIMER', `Staged media ${mediaId} status set to EXPIRED in DB.`, timer.traceId);
+            }
+            return;
+          }
 
           // Build Execution Context
           const context = new ExecutionContext(

@@ -36,13 +36,13 @@ export class BootSyncCoordinator {
         traceId: randomUUID(),
         correlationId: randomUUID(),
         isReplay: false,
-        isSandbox: !process.env.COMPOSIO_API_KEY,
+        isSandbox: !process.env.GOOGLE_CLIENT_ID,
         idempotencyKey: `boot-sync-${today.getTime()}`,
         timeMin: today,
         timeMax: nextWeek,
       });
       const events = toolResult.success ? (toolResult.data ?? []) : [];
-      console.log(chalk.green(`[DB pulles tasks] Fetched ${events.length} events from Google Calendar via Composio.`));
+      console.log(chalk.green(`[DB pulles tasks] Fetched ${events.length} events from Google Calendar natively.`));
 
       // 2. [synched calnder remainders]
       let newCount = 0;

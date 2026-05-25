@@ -285,23 +285,35 @@ export class SystemOpsAgent implements IAgent {
           await this.persistence.outboxStore.saveBulk([snoozeEvent]);
 
           // Also update Google Calendar event if we have the event ID
-          if (projection?.googleEventId && process.env.COMPOSIO_API_KEY) {
+          if (projection?.googleEventId && process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_REFRESH_TOKEN) {
             try {
-              const { ComposioClient } = await import('../../infrastructure/composio/ComposioClient.js');
-              const composio = new ComposioClient(
-                process.env.COMPOSIO_API_KEY,
-                process.env.COMPOSIO_USER_ID || 'karen'
+              const { google } = await import('googleapis');
+              const oauth2Client = new google.auth.OAuth2(
+                process.env.GOOGLE_CLIENT_ID,
+                process.env.GOOGLE_CLIENT_SECRET,
+                'http://localhost:3000'
               );
+              oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+              const calendarClient = google.calendar({ version: 'v3', auth: oauth2Client });
+              
               const endTime = new Date(newStartTime.getTime() + 30 * 60 * 1000);
-              await composio.updateEvent(
-                projection.googleEventId,
-                {
-                  startDateTime: newStartTime.toISOString(),
-                  endDateTime: endTime.toISOString(),
-                  timezone: 'Asia/Kolkata'
-                },
-                context.traceId
-              );
+              const calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
+
+              await calendarClient.events.patch({
+                calendarId,
+                eventId: projection.googleEventId,
+                requestBody: {
+                  start: {
+                    dateTime: newStartTime.toISOString(),
+                    timeZone: 'Asia/Kolkata'
+                  },
+                  end: {
+                    dateTime: endTime.toISOString(),
+                    timeZone: 'Asia/Kolkata'
+                  }
+                }
+              });
+
               // Update projection too
               await db.collection('calendar_event_projection').updateOne(
                 { internalTaskId: taskId },
