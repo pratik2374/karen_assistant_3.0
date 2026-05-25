@@ -50,26 +50,48 @@ export class InboundMessagePipeline {
     let finalQueryText = messageText || '';
 
     // A. INCOMING STAGED MEDIA REPLY CORRELATION
+    let staged = null;
     if (parentMessageId && db) {
-      const staged = await db.collection('staged_media').findOne({ messageId: parentMessageId });
+      staged = await db.collection('staged_media').findOne({
+        $or: [
+          { messageId: parentMessageId },
+          { assistantReplyMessageId: parentMessageId }
+        ]
+      });
       if (staged) {
         RuntimeEventBus.log('PIPELINE_REPLY_MATCH', 'TRANSPORT', `Incoming message correlates to staged media ID: ${staged.mediaId} | Status: ${staged.status}`, traceId);
-
-        const tenMinutesMs = 10 * 60 * 1000;
-        const isExpired = staged.status === 'EXPIRED' || (Date.now() - staged.createdAt.getTime() > tenMinutesMs);
-
-        if (isExpired) {
-          RuntimeEventBus.log('PIPELINE_REPLY_EXPIRED', 'TRANSPORT', `Correlated staged media has expired. Sending Scenario 2 response.`, traceId);
-          await this.sendReply(userId, "Sorry Sir, I am punctual not like you, I deleted it after 10 minutes sharp.", messageId);
-          return;
-        }
-
-        // Active staged media: Fast-track to LLM by masking its Drive link as {{MASKED_URL_1}}
-        const maskKey = `{{MASKED_URL_1}}`;
-        urlMasks[maskKey] = staged.driveLink;
-        finalQueryText = `${messageText || ''} ${maskKey}`;
-        RuntimeEventBus.log('PIPELINE_REPLY_FAST_TRACK', 'TRANSPORT', `Fast-tracking reply flow with staging Drive URL: ${staged.driveLink}`, traceId);
       }
+    } else if (db) {
+      // Fallback: Find the most recent active staged media for this user in the last 10 minutes
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+      staged = await db.collection('staged_media').findOne(
+        {
+          userId,
+          status: 'PENDING',
+          createdAt: { $gte: tenMinutesAgo }
+        },
+        { sort: { createdAt: -1 } }
+      );
+      if (staged) {
+        RuntimeEventBus.log('PIPELINE_REPLY_MATCH_FALLBACK', 'TRANSPORT', `Correlated to most recent active staged media ID: ${staged.mediaId} via fallback`, traceId);
+      }
+    }
+
+    if (staged) {
+      const tenMinutesMs = 10 * 60 * 1000;
+      const isExpired = staged.status === 'EXPIRED' || (Date.now() - staged.createdAt.getTime() > tenMinutesMs);
+
+      if (isExpired) {
+        RuntimeEventBus.log('PIPELINE_REPLY_EXPIRED', 'TRANSPORT', `Correlated staged media has expired. Sending Scenario 2 response.`, traceId);
+        await this.sendReply(userId, "Sorry Sir, I am punctual not like you, I deleted it after 10 minutes sharp.", messageId);
+        return;
+      }
+
+      // Active staged media: Fast-track to LLM by masking its Drive link as {{MASKED_URL_1}}
+      const maskKey = `{{MASKED_URL_1}}`;
+      urlMasks[maskKey] = staged.driveLink;
+      finalQueryText = `${messageText || ''} ${maskKey}`;
+      RuntimeEventBus.log('PIPELINE_REPLY_FAST_TRACK', 'TRANSPORT', `Fast-tracking reply flow with staging Drive URL: ${staged.driveLink}`, traceId);
     }
 
     // B. MEDIA INGRESS STAGING / CAPTION FLOW
@@ -118,7 +140,14 @@ export class InboundMessagePipeline {
           }
 
           const mediaWord = mediaDetails.type === 'image' ? 'image' : 'file';
-          await this.sendReply(userId, `Sir, what should I do with this ${mediaWord}? After 10 minutes I will delete it.`, messageId);
+          const sentMsgId = await this.sendReply(userId, `Sir, what should I do with this ${mediaWord}? After 10 minutes I will delete it.`, messageId);
+          if (sentMsgId) {
+            await db.collection('staged_media').updateOne(
+              { mediaId: mediaDetails.mediaId },
+              { $set: { assistantReplyMessageId: sentMsgId } }
+            );
+            RuntimeEventBus.log('PIPELINE_MEDIA_CORRELATION_MAPPED', 'TRANSPORT', `Mapped assistant reply message ID ${sentMsgId} to staged media: ${mediaDetails.mediaId}`, traceId);
+          }
           return;
         } else {
           // Direct permanent store via caption fast-track using {{MASKED_URL_1}}
@@ -236,14 +265,38 @@ export class InboundMessagePipeline {
     }
 
     try {
-      // Execute AI Cognition
-      const proposal = await this.aiRuntime.generateProposal(
-        queryToProcess,
-        [], 
-        'PLANNING', // Mode
-        traceId,
-        memories
-      );
+      const lowercaseQuery = queryToProcess.toLowerCase();
+      let proposal;
+      
+      const isBgRemoval = lowercaseQuery.includes('background') || 
+                          lowercaseQuery.includes('removebg') || 
+                          lowercaseQuery.includes('remove bg') ||
+                          /\b(bg|clear bg)\b/i.test(lowercaseQuery);
+                          
+      if (isBgRemoval) {
+        proposal = {
+          proposalType: ProposalType.COMMAND_PROPOSAL,
+          actionIntent: 'route_to_docs',
+          rawPayload: JSON.stringify({
+            action: 'REMOVE_BACKGROUND',
+            imageUrlPlaceholder: '{{MASKED_URL_1}}',
+            userQuery: queryToProcess,
+            query: queryToProcess
+          }),
+          confidence: 1.0,
+          reasoning: 'Fast-tracked background removal intent detected.'
+        };
+        RuntimeEventBus.log('PIPELINE_FAST_TRACK_BG_REMOVAL', 'AI', 'Detected background removal request. Fast-tracking to DocsAgent.', traceId);
+      } else {
+        // Execute AI Cognition
+        proposal = await this.aiRuntime.generateProposal(
+          queryToProcess,
+          [], 
+          'PLANNING', // Mode
+          traceId,
+          memories
+        );
+      }
 
       RuntimeEventBus.log('PIPELINE_AI_COGNITION_SUCCESS', 'AI',
         `AI generated proposal successfully: ${proposal.proposalType}`,
@@ -314,7 +367,11 @@ export class InboundMessagePipeline {
             try {
               const agentContext = {
                 intent: intentAction,
-                payload: payloadObj,
+                payload: {
+                  ...payloadObj,
+                  userQuery: maskedMessageText,
+                  query: maskedMessageText
+                },
                 userId,
                 traceId,
                 correlationId,
@@ -366,10 +423,10 @@ export class InboundMessagePipeline {
       await this.sessionRepo.saveSession(session);
     }
   }
-  private async sendReply(to: string, body: string, idempotencyKey: string): Promise<void> {
+  private async sendReply(to: string, body: string, idempotencyKey: string): Promise<string | undefined> {
     if (!body || body.trim() === '') {
       console.warn('[INBOUND PIPELINE] Warning: Attempted to send empty reply. Skipping WhatsApp payload.');
-      return;
+      return undefined;
     }
 
     let finalBody = body;
@@ -396,7 +453,7 @@ export class InboundMessagePipeline {
     }
 
     const msg: WhatsAppMessage = { to, body: finalBody, idempotencyKey: `reply-${idempotencyKey}` };
-    await this.whatsapp.sendMessage(msg, false, false);
+    const sentMsgId = await this.whatsapp.sendMessage(msg, false, false);
 
     // Save assistant message to MemoryService and trigger background cipherizer
     if (this.memoryService) {
@@ -414,6 +471,8 @@ export class InboundMessagePipeline {
         console.error('[MemoryService] Background cipherizer error:', err);
       });
     }
+
+    return sentMsgId;
   }
 
   private async downloadWhatsAppMedia(mediaId: string, traceId: string): Promise<{ buffer: Buffer; mimeType: string }> {

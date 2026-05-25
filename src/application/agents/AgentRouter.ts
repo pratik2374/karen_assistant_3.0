@@ -83,14 +83,14 @@ export class AgentRouter {
       },
       {
         name: 'route_to_docs',
-        description: 'Route the request to the DocsAgent. Use this for retrieving or storing personal documents (e.g. Aadhar, PAN, Passport, Voter ID) from the secure vault. For RETRIEVE, pass the query or "all". For STORE, pass the name and the {{MASKED_URL}} placeholder.',
+        description: 'Route the request to the DocsAgent. Use this for retrieving or storing personal documents (e.g. Aadhar, PAN, Passport, Voter ID) from the secure vault, or for image background removal.',
         parameters: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['RETRIEVE', 'STORE'] },
+            action: { type: 'string', enum: ['RETRIEVE', 'STORE', 'REMOVE_BACKGROUND'] },
             query: { type: 'string', description: 'The search query for retrieval, or "all" to list all.' },
             name: { type: 'string', description: 'The name of the document to store.' },
-            urlPlaceholder: { type: 'string', description: 'The {{MASKED_URL_x}} placeholder to store.' }
+            urlPlaceholder: { type: 'string', description: 'The {{MASKED_URL_x}} placeholder representing the URL or image to store/process.' }
           },
           required: ['action']
         }
@@ -124,7 +124,7 @@ Payload: ${JSON.stringify(context.payload)}
 
 If the intent involves standard reminders, tasks, timers, or system state, call route_to_system_ops.
 If the intent involves calendar events or scheduling external meetings, call route_to_calendar.
-If the intent involves retrieving or saving personal/secure documents to the vault, call route_to_docs.
+If the intent involves retrieving or saving personal/secure documents to the vault, or removing image backgrounds, call route_to_docs.
 
 Call the appropriate tool now. DO NOT generate an answer without calling a tool.
       `;

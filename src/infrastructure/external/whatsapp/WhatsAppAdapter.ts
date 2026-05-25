@@ -17,7 +17,7 @@ export class WhatsAppAdapter extends ToolExecutionGateway {
     super(circuitBreaker);
   }
 
-  async sendMessage(message: WhatsAppMessage, isReplay: boolean, isSandbox: boolean): Promise<void> {
+  async sendMessage(message: WhatsAppMessage, isReplay: boolean, isSandbox: boolean): Promise<string | undefined> {
     const accessToken = (this.config as any)?.WHATSAPP_ACCESS_TOKEN ?? process.env.WHATSAPP_ACCESS_TOKEN;
     const phoneId = (this.config as any)?.WHATSAPP_PHONE_NUMBER_ID ?? process.env.WHATSAPP_PHONE_NUMBER_ID;
     const executionMode = this.config?.EXECUTION_MODE ?? process.env.EXECUTION_MODE ?? 'SANDBOX';
@@ -33,7 +33,7 @@ export class WhatsAppAdapter extends ToolExecutionGateway {
 
     // We bypass Sandbox / Replay guards for Outbound WhatsApp sends by setting isReplay and isSandbox to false in the Gateway Context,
     // ensuring NO early return exists in SANDBOX, REPLAY, or SIMULATION modes.
-    await this.execute(
+    return await this.execute<string | undefined>(
       {
         operationName: 'WhatsApp.SendMessage',
         isReplay: false, 
@@ -66,7 +66,7 @@ export class WhatsAppAdapter extends ToolExecutionGateway {
           if (response.status === 400) {
             RuntimeEventBus.log('WHATSAPP_SEND_REJECTED', 'ERROR', `Graph API rejected message (HTTP 400). It will not be retried. Body: ${resBody}`);
             console.warn(`[WHATSAPP] Dropping message to ${cleanTo} due to HTTP 400 (e.g. unverified sandbox number).`);
-            return; // Do not throw, so BullMQ doesn't infinitely retry bad requests
+            return undefined; // Do not throw, so BullMQ doesn't infinitely retry bad requests
           }
           throw new Error(`Graph API returned HTTP ${response.status}: ${resBody}`);
         }
@@ -76,14 +76,17 @@ export class WhatsAppAdapter extends ToolExecutionGateway {
           const metaMsgId = parsed.messages?.[0]?.id;
           if (metaMsgId) {
             RuntimeEventBus.log('WHATSAPP_SEND_SUCCESS', 'OUTBOUND', `Meta Graph API Message ID: ${metaMsgId}`);
+            return metaMsgId;
           }
         } catch (e) {
           // Silent catch for JSON parsing if any
         }
+        return undefined;
       },
       async () => {
         // Mock fallback, should not be hit because we bypass sandbox/replay checks
         RuntimeEventBus.log('WHATSAPP_SEND_SANDBOX', 'OUTBOUND', `Simulated sandbox outbound to ${message.to}: "${message.body}"`);
+        return 'mock-sandbox-message-id';
       }
     );
   }
