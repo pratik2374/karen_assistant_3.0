@@ -196,7 +196,7 @@ export function buildApiModule(
     if (persistence.db) {
       const calendarProjectionRepo = new CalendarProjectionMongoRepository(persistence.db);
       vaultRepo = new DocumentVaultMongoRepository(persistence.db);
-      docsAgent = new DocsAgent(vaultRepo);
+      docsAgent = new DocsAgent(vaultRepo, persistence.db);
       (docsAgent as any).timerService = timerService;
 
       agentRouter = new AgentRouter(

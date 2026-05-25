@@ -400,7 +400,14 @@ export class InboundMessagePipeline {
 
               if (routerResult.routed) {
                 const { result } = routerResult;
-                await this.sendReply(userId, result.summaryReport, messageId);
+                const sentMsgId = await this.sendReply(userId, result.summaryReport, messageId);
+                if (sentMsgId && result.data?.bgRemovedFileId && db) {
+                  await db.collection('staged_media').updateOne(
+                    { driveFileId: result.data.bgRemovedFileId },
+                    { $set: { assistantReplyMessageId: sentMsgId } }
+                  );
+                  RuntimeEventBus.log('PIPELINE_BG_REMOVED_MAPPED', 'TRANSPORT', `Mapped assistant reply ID ${sentMsgId} to background-removed staged media.`, traceId);
+                }
               } else {
                 await this.sendReply(userId, "I couldn't process that request right now. Please try rephrasing.", messageId);
               }

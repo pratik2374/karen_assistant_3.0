@@ -13,10 +13,14 @@ export class DocsAgent implements IAgent {
   readonly domain = 'System/Vault';
   readonly capabilities = ['document_storage', 'document_retrieval', 'secure_vault'];
 
-  constructor(private vaultRepo: DocumentVaultMongoRepository) {}
+  constructor(
+    private vaultRepo: DocumentVaultMongoRepository,
+    private db?: any
+  ) {}
 
   public async execute(context: AgentContext): Promise<AgentExecutionResult> {
     const start = Date.now();
+    let bgRemovedFileId: string | undefined = undefined;
 
     RuntimeEventBus.log('AGENT_STARTED', 'AI',
       `DocsAgent executing intent via LlamaIndex: ${context.intent}`,
@@ -318,6 +322,27 @@ export class DocsAgent implements IAgent {
             RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Scheduled 10-minute temporary file cleanup timer for Drive file: ${fileId}`, context.traceId);
           }
 
+          // 4b. Also store it in staged_media collection so replies can correlate!
+          const activeDb = this.db;
+          if (activeDb) {
+            await activeDb.collection('staged_media').insertOne({
+              mediaId: `bg-removed-${fileId}`,
+              userId: context.userId,
+              messageId: `bg-removed-msg-${fileId}`,
+              assistantReplyMessageId: `pending-${fileId}`, // We will update this later in the pipeline!
+              type: 'image',
+              mimeType,
+              filename,
+              driveFileId: fileId,
+              driveLink: viewLink,
+              status: 'PENDING',
+              createdAt: new Date()
+            });
+            RuntimeEventBus.log('DOCS_AGENT_TOOL', 'SYSTEM', `Staged background-removed image in staged_media for reply correlation: bg-removed-${fileId}`, context.traceId);
+          }
+
+          bgRemovedFileId = fileId;
+
           // 5. Store metadata in permanent Vault repository
           const docId = randomUUID();
           await this.vaultRepo.save({
@@ -409,7 +434,7 @@ Original User Query: "${userQuery}"
 
       return {
         status: 'SUCCESS',
-        data: {},
+        data: { bgRemovedFileId },
         summaryReport,
         mutationsCount: 1,
         latencyMs: Date.now() - start,
