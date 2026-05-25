@@ -27,10 +27,17 @@ export class DocsAgent implements IAgent {
         RuntimeEventBus.log('DOCS_AGENT_RETRIEVE', 'SYSTEM', `Searching vault for: "${query}"`, context.traceId);
         
         let docs: DocumentVaultEntry[] = [];
-        if (query.toLowerCase() === 'all') {
+        const qLower = query.toLowerCase();
+        if (qLower === 'all' || qLower.includes('all doc') || qLower.includes('all my') || qLower.includes('everything')) {
           docs = await this.vaultRepo.findAll();
         } else {
           docs = await this.vaultRepo.findByAlias(query);
+          
+          // Fallback: if not found by alias, do a broader regex match on the name
+          if (docs.length === 0) {
+            const allDocs = await this.vaultRepo.findAll();
+            docs = allDocs.filter(d => d.name.toLowerCase().includes(qLower) || qLower.includes(d.name.toLowerCase()));
+          }
         }
 
         if (docs.length === 0) {

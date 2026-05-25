@@ -98,7 +98,7 @@ export class VaultController {
       <script>
         async function fetchDocs() {
           try {
-            const res = await fetch('/vault/api');
+            const res = await fetch('/vault/api', { credentials: 'same-origin' });
             if (!res.ok) throw new Error('Failed to fetch');
             const docs = await res.json();
             const tbody = document.getElementById('docTableBody');
@@ -126,6 +126,7 @@ export class VaultController {
             const res = await fetch('/vault/api', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
               body: JSON.stringify({ name, link })
             });
             if (res.ok) {
@@ -146,7 +147,10 @@ export class VaultController {
         async function deleteDoc(id) {
           if(confirm('Are you sure you want to delete this document?')) {
             try {
-              const res = await fetch(\`/vault/api/\${id}\`, { method: 'DELETE' });
+              const res = await fetch(\`/vault/api/\${id}\`, { 
+                method: 'DELETE',
+                credentials: 'same-origin'
+              });
               if (res.ok) {
                 await fetchDocs();
               } else {

@@ -15,6 +15,8 @@ import { DocumentVaultMongoRepository } from '../../infrastructure/persistence/m
 import { randomUUID } from 'crypto';
 
 export class InboundMessagePipeline {
+  public static vaultRepoInstance?: DocumentVaultMongoRepository;
+
   constructor(
     private aiRuntime: AIProposalRuntime,
     private sessionRepo: ConversationSessionRepository,
@@ -276,19 +278,24 @@ export class InboundMessagePipeline {
       return;
     }
 
-    // LATE-BINDING LINK INJECTION (OUTBOUND)
     let finalBody = body;
-    if (this.vaultRepo && finalBody.includes('{{VAULT_DOC:')) {
+    const activeVaultRepo = this.vaultRepo || InboundMessagePipeline.vaultRepoInstance;
+    
+    if (activeVaultRepo && finalBody.includes('{{VAULT_DOC:')) {
       const docRegex = /\{\{VAULT_DOC:([a-zA-Z0-9_-]+)\}\}/g;
       const matches = Array.from(finalBody.matchAll(docRegex));
       
       for (const match of matches) {
         const docId = match[1];
-        const doc = await this.vaultRepo.findById(docId);
-        if (doc) {
-          finalBody = finalBody.replace(match[0], doc.link);
-        } else {
-          finalBody = finalBody.replace(match[0], '[Document Link Not Found]');
+        try {
+          const doc = await activeVaultRepo.findById(docId);
+          if (doc) {
+            finalBody = finalBody.replace(match[0], doc.link);
+          } else {
+            finalBody = finalBody.replace(match[0], '[Document Link Not Found]');
+          }
+        } catch (err) {
+          console.error('[INBOUND PIPELINE] Error fetching vault doc:', err);
         }
       }
       RuntimeEventBus.log('PIPELINE_LINK_INJECT', 'SECURITY', `Injected ${matches.length} secure document links for outbound message.`);

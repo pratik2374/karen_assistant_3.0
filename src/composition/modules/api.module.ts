@@ -216,6 +216,7 @@ export function buildApiModule(
     (pipeline as any).agentRouter = agentRouter;
     if (vaultRepo) {
       (pipeline as any).vaultRepo = vaultRepo;
+      InboundMessagePipeline.vaultRepoInstance = vaultRepo;
     }
 
     // Legacy CalendarSyncAgent still handles BullMQ-based outbound sync jobs
