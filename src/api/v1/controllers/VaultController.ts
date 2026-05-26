@@ -501,13 +501,88 @@ export class VaultController {
     .btn-bulk-delete:hover { background: #ff2a3a; transform: translateY(-1px); }
     .btn-bulk-delete:active { transform: translateY(0); }
 
-    .dotted-add-card { border: 2px dashed var(--border-strong); border-radius: var(--radius); padding: 1.5rem; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; background: transparent; transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); margin-top: 1.5rem; min-height: 80px; position: relative; overflow: hidden; }
-    .dotted-add-card:hover, .dotted-add-card.expanded { border-style: solid; border-color: var(--accent); background: var(--card); cursor: default; }
-    .dotted-add-card .placeholder-content { display: flex; align-items: center; gap: 10px; font-family: 'Syne', sans-serif; font-weight: 700; font-size: 0.95rem; color: var(--ink3); transition: opacity 0.2s ease; }
-    .dotted-add-card:hover .placeholder-content, .dotted-add-card.expanded .placeholder-content { opacity: 0; pointer-events: none; position: absolute; }
-    .dotted-add-card .form-content { width: 100%; opacity: 0; pointer-events: none; display: none; transition: opacity 0.3s ease; }
-    .dotted-add-card:hover .form-content, .dotted-add-card.expanded .form-content { display: block; opacity: 1; pointer-events: auto; }
-    .dotted-add-card .form-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; align-items: end; width: 100%; }
+    .dotted-add-card { border: 2px dashed var(--border-strong); border-radius: var(--radius); padding: 0; height: 64px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: transparent; transition: border-color 0.2s, background-color 0.2s; margin-top: 1.5rem; overflow: hidden; }
+    .dotted-add-card:hover { border-color: var(--accent); background-color: var(--card); }
+    .dotted-add-card .placeholder-content { display: flex; align-items: center; gap: 10px; font-family: 'Syne', sans-serif; font-weight: 700; font-size: 0.9rem; color: var(--ink3); transition: color 0.2s; }
+    .dotted-add-card:hover .placeholder-content { color: var(--ink2); }
+
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(4,4,8,0.7);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      z-index: 10000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease;
+    }
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .modal-card {
+      background: rgba(25,25,45,0.75);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius);
+      width: 100%;
+      max-width: 480px;
+      padding: 2rem;
+      box-shadow: var(--shadow-lg);
+      transform: scale(0.9) translateY(10px);
+      transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.15), opacity 0.25s ease;
+      opacity: 0;
+      position: relative;
+      backdrop-filter: blur(15px);
+      -webkit-backdrop-filter: blur(15px);
+    }
+    .modal-overlay.active .modal-card {
+      transform: scale(1) translateY(0);
+      opacity: 1;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+    }
+    .modal-title {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.2rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--ink3);
+      cursor: pointer;
+      font-size: 1.25rem;
+      padding: 4px;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+    .modal-close:hover {
+      color: var(--ink);
+    }
+    .modal-body {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .modal-body .field {
+      display: flex;
+      flex-direction: column;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      margin-top: 1.5rem;
+    }
     .dotted-add-card .bucket-type-row { display: flex; gap: 16px; margin-bottom: 12px; align-items: center; }
     .bucket-type-row span { font-size: 0.72rem; font-family: 'DM Mono', monospace; color: var(--ink3); text-transform: uppercase; }
     .bucket-radio { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; cursor: pointer; color: var(--ink2); }
@@ -687,27 +762,10 @@ export class VaultController {
     </div>
   </div>
 
-  <div class="dotted-add-card" id="dottedAddCard">
+  <div class="dotted-add-card" id="dottedAddCard" onclick="openAddModal()">
     <div class="placeholder-content">
       <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      <span>Scroll to bottom &amp; hover to add new entry</span>
-    </div>
-    <div class="form-content">
-      <div class="bucket-type-row" id="bucketTypeSelectorRow" style="display: none; align-items: center; gap: 8px;">
-        <span>Select Bucket:</span>
-        <select id="addBucketSelect" style="height: 32px; padding: 0 28px 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-family: 'DM Sans', sans-serif; font-size: 0.8rem; color: var(--ink); background: rgba(0,0,0,0.3); outline: none; transition: border-color 0.15s; cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: url(&quot;data:image/svg+xml;utf8,<svg fill='white' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>&quot;); background-repeat: no-repeat; background-position: right 6px center; background-size: 14px;"></select>
-      </div>
-      <div class="form-row">
-        <div class="field">
-          <label id="addNameLabel" for="addName">Document Name</label>
-          <input type="text" id="addName" placeholder="e.g. Aadhaar Card">
-        </div>
-        <div class="field">
-          <label id="addValueLabel" for="addValue">Secure Link</label>
-          <input type="text" id="addValue" placeholder="https://drive.google.com/…">
-        </div>
-        <button class="btn btn-primary" id="addSaveBtn" onclick="addEntryFromDottedCard()">Save Entry</button>
-      </div>
+      <span>Add New Entry</span>
     </div>
   </div>
 
@@ -717,6 +775,33 @@ export class VaultController {
   <span class="bulk-text"><span id="bulkCount">0</span> selected</span>
   <button class="btn-bulk-delete" id="bulkDeleteBtn" onclick="deleteBulkSelected()">Delete Selected</button>
   <button onclick="selectedIds=[];document.querySelectorAll('.item-chk').forEach(c=>c.checked=false);var sa=document.getElementById('selectAll');if(sa)sa.checked=false;updateBulkDrawer();" style="background:transparent;border:none;color:var(--ink3);cursor:pointer;font-size:1rem;padding:4px;">✕</button>
+</div>
+
+<div class="modal-overlay" id="addEntryModal" onclick="if(event.target===this)closeAddModal()">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span class="modal-title" id="modalTitle">Add New Entry</span>
+      <button class="modal-close" onclick="closeAddModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="bucket-type-row" id="bucketTypeSelectorRow" style="display: none; align-items: center; gap: 8px;">
+        <span>Select Bucket:</span>
+        <select id="addBucketSelect" style="height: 32px; padding: 0 28px 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-family: 'DM Sans', sans-serif; font-size: 0.8rem; color: var(--ink); background: rgba(0,0,0,0.3); outline: none; transition: border-color 0.15s; cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: url(&quot;data:image/svg+xml;utf8,<svg fill='white' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>&quot;); background-repeat: no-repeat; background-position: right 6px center; background-size: 14px;"></select>
+      </div>
+      <div class="field">
+        <label id="addNameLabel" for="addName">Name</label>
+        <input type="text" id="addName" placeholder="">
+      </div>
+      <div class="field">
+        <label id="addValueLabel" for="addValue">Value</label>
+        <input type="text" id="addValue" placeholder="">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" style="background: rgba(255,255,255,0.06); color: var(--ink2); border: 1px solid var(--border);" onclick="closeAddModal()">Cancel</button>
+      <button class="btn btn-primary" id="addSaveBtn" onclick="addEntryFromDottedCard()">Save Entry</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -749,7 +834,6 @@ let allDocs = [];
 let allLists = [];
 let activeTab = 'vault'; // 'vault', 'buckets', 'personal'
 let selectedIds = [];
-let isInputFocused = false;
 
 function safeText(str) {
   const d = document.createElement('div');
@@ -897,9 +981,7 @@ function populateAddBucketSelect() {
 }
 
 function updateAddCardFields() {
-  const card = document.getElementById('dottedAddCard');
-  if (!card) return;
-
+  const modalTitle = document.getElementById('modalTitle');
   const bucketSelectRow = document.getElementById('bucketTypeSelectorRow');
   const nameLabel = document.getElementById('addNameLabel');
   const nameInput = document.getElementById('addName');
@@ -907,25 +989,44 @@ function updateAddCardFields() {
   const valueInput = document.getElementById('addValue');
 
   if (activeTab === 'buckets') {
-    bucketSelectRow.style.display = 'flex';
+    if (modalTitle) modalTitle.textContent = 'Add to Bucket';
+    if (bucketSelectRow) bucketSelectRow.style.display = 'flex';
     populateAddBucketSelect();
     nameLabel.textContent = 'Bucket Title';
     nameInput.placeholder = 'e.g. Learn LlamaIndex';
     valueLabel.textContent = 'Link or Notes';
     valueInput.placeholder = 'e.g. https://github.com/run-llama/LlamaIndex';
   } else if (activeTab === 'personal') {
-    bucketSelectRow.style.display = 'none';
+    if (modalTitle) modalTitle.textContent = 'Add Credential / Secret';
+    if (bucketSelectRow) bucketSelectRow.style.display = 'none';
     nameLabel.textContent = 'Credential / Secret Title';
     nameInput.placeholder = 'e.g. Email Password';
     valueLabel.textContent = 'Value / Password';
     valueInput.placeholder = 'e.g. mySecret123!';
   } else { // 'vault'
-    bucketSelectRow.style.display = 'none';
+    if (modalTitle) modalTitle.textContent = 'Add Secure Document';
+    if (bucketSelectRow) bucketSelectRow.style.display = 'none';
     nameLabel.textContent = 'Document Name';
     nameInput.placeholder = 'e.g. Aadhaar Card';
     valueLabel.textContent = 'Secure Link';
     valueInput.placeholder = 'https://drive.google.com/…';
   }
+}
+
+function openAddModal() {
+  const modal = document.getElementById('addEntryModal');
+  if (!modal) return;
+  modal.classList.add('active');
+  updateAddCardFields();
+  setTimeout(() => {
+    const firstInput = document.getElementById('addName');
+    if (firstInput) firstInput.focus();
+  }, 100);
+}
+
+function closeAddModal() {
+  const modal = document.getElementById('addEntryModal');
+  if (modal) modal.classList.remove('active');
 }
 
 // ── CHECKBOX AND BULK ACTIONS ──────────────────────────────
@@ -1346,12 +1447,11 @@ async function addEntryFromDottedCard() {
       allDocs.unshift(resData.doc);
     }
 
-    // Clear inputs and collapse card
+    // Clear inputs and close modal
     nameEl.value = '';
     valEl.value = '';
     
-    const card = document.getElementById('dottedAddCard');
-    if (card) card.classList.remove('expanded');
+    closeAddModal();
 
     toast('Entry saved securely.');
     updateStats();
@@ -1418,45 +1518,6 @@ async function deleteItem(id, btnEl) {
   }
 }
 
-// ── DOTTED CARD PERSISTENCE LOGIC ──────────────────────────
-function setupDottedCardEvents() {
-  const card = document.getElementById('dottedAddCard');
-  if (!card) return;
-
-  card.addEventListener('click', function(e) {
-    // If not expanded and they clicked it, expand it
-    if (!card.classList.contains('expanded')) {
-      card.classList.add('expanded');
-      const firstInput = card.querySelector('input');
-      if (firstInput) firstInput.focus();
-    }
-  });
-
-  const inputs = card.querySelectorAll('input, select');
-  inputs.forEach(input => {
-    input.addEventListener('focus', () => {
-      isInputFocused = true;
-      card.classList.add('expanded');
-    });
-    input.addEventListener('blur', () => {
-      isInputFocused = false;
-      setTimeout(() => {
-        if (!isInputFocused && !card.matches(':hover')) {
-          card.classList.remove('expanded');
-        }
-      }, 150);
-    });
-  });
-
-  card.addEventListener('mouseleave', () => {
-    setTimeout(() => {
-      if (!isInputFocused) {
-        card.classList.remove('expanded');
-      }
-    }, 150);
-  });
-}
-
 // ── INIT ───────────────────────────────────────────────────
 function init() {
   dbg('INFO', 'INIT', '=== Vault Dashboard Initializing ===');
@@ -1478,7 +1539,6 @@ function init() {
 
     // Initial setup
     updateAddCardFields();
-    setupDottedCardEvents();
 
     dbg('INFO', 'INIT', 'Calling fetchDocs()...');
     fetchDocs().catch(function(e) { dbg('ERR', 'INIT', 'fetchDocs unhandled rejection: ' + e.message); });
