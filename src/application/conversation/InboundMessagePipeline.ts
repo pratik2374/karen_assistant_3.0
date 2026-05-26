@@ -12,6 +12,7 @@ import { MainKarenOrchestrator } from '../ai/agents/MainKarenOrchestrator.js';
 import { MemoryService } from '../ai/memory/MemoryService.js';
 import { AgentRouter } from '../agents/AgentRouter.js';
 import { DocumentVaultMongoRepository } from '../../infrastructure/persistence/mongo/repositories/DocumentVaultMongoRepository.js';
+import { KarenPersonaEngine } from '../ai/persona/KarenPersonaEngine.js';
 import { randomUUID } from 'crypto';
 
 export class InboundMessagePipeline {
@@ -27,7 +28,8 @@ export class InboundMessagePipeline {
     private orchestrator?: MainKarenOrchestrator,
     private memoryService?: MemoryService,
     private agentRouter?: AgentRouter,
-    private vaultRepo?: DocumentVaultMongoRepository
+    private vaultRepo?: DocumentVaultMongoRepository,
+    private personaEngine?: KarenPersonaEngine
   ) {}
 
   public timerService?: any;
@@ -281,7 +283,8 @@ export class InboundMessagePipeline {
 
     try {
       const lowercaseQuery = queryToProcess.toLowerCase();
-      let proposal;
+      let intentAction = 'route_intent';
+      let payloadObj: any = {};
       
       const isBgRemoval = lowercaseQuery.includes('background') || 
                           lowercaseQuery.includes('removebg') || 
@@ -292,162 +295,92 @@ export class InboundMessagePipeline {
                               lowercaseQuery.includes('retrieve') ||
                               lowercaseQuery.includes('get doc') ||
                               lowercaseQuery.includes('show doc');
+      
+      const isFastTrack = isBgRemoval || isLinkRetrieval;
                            
       if (isBgRemoval) {
-        proposal = {
-          proposalType: ProposalType.COMMAND_PROPOSAL,
-          actionIntent: 'route_to_docs',
-          rawPayload: JSON.stringify({
-            action: 'REMOVE_BACKGROUND',
-            imageUrlPlaceholder: '{{MASKED_URL_1}}',
-            userQuery: queryToProcess,
-            query: queryToProcess
-          }),
-          confidence: 1.0,
-          reasoning: 'Fast-tracked background removal intent detected.'
+        intentAction = 'route_to_docs';
+        payloadObj = {
+          action: 'REMOVE_BACKGROUND',
+          imageUrlPlaceholder: '{{MASKED_URL_1}}',
+          userQuery: queryToProcess,
+          query: queryToProcess
         };
         RuntimeEventBus.log('PIPELINE_FAST_TRACK_BG_REMOVAL', 'AI', 'Detected background removal request. Fast-tracking to DocsAgent.', traceId);
       } else if (isLinkRetrieval) {
-        proposal = {
-          proposalType: ProposalType.COMMAND_PROPOSAL,
-          actionIntent: 'route_to_docs',
-          rawPayload: JSON.stringify({
-            action: 'RETRIEVE',
-            userQuery: queryToProcess,
-            query: queryToProcess
-          }),
-          confidence: 1.0,
-          reasoning: 'Fast-tracked document link retrieval intent detected.'
+        intentAction = 'route_to_docs';
+        payloadObj = {
+          action: 'RETRIEVE',
+          userQuery: queryToProcess,
+          query: queryToProcess
         };
         RuntimeEventBus.log('PIPELINE_FAST_TRACK_LINK_RETRIEVAL', 'AI', 'Detected document link retrieval request. Fast-tracking to DocsAgent.', traceId);
-      } else {
-        // Execute AI Cognition
-        proposal = await this.aiRuntime.generateProposal(
-          queryToProcess,
-          [], 
-          'PLANNING', // Mode
-          traceId,
-          memories
-        );
       }
 
-      RuntimeEventBus.log('PIPELINE_AI_COGNITION_SUCCESS', 'AI',
-        `AI generated proposal successfully: ${proposal.proposalType}`,
-        traceId
-      );
+      if (this.agentRouter) {
+        const commandId = randomUUID();
+        const correlationId = randomUUID();
 
-      // Route Proposal
-      switch (proposal.proposalType) {
-        case ProposalType.CLARIFICATION_REQUEST:
-          RuntimeEventBus.log('CLARIFICATION_SENT', 'AI',
-            `Clarification sent to ${userId}: "${(proposal as any).clarificationPrompt.substring(0, 60)}"`, traceId);
-          session.setClarification({
-            originalQuery: queryToProcess,
-            clarificationPrompt: (proposal as any).clarificationPrompt,
-            missingInformation: (proposal as any).missingInformation,
-            expiresAt: new Date(Date.now() + 15 * 60 * 1000) // 15 min
-          });
+        const agentContext = {
+          intent: intentAction,
+          payload: {
+            ...payloadObj,
+            userQuery: maskedMessageText,
+            query: maskedMessageText,
+            conversationContext: conversationHistoryContext
+          },
+          userId,
+          traceId,
+          correlationId,
+          isReplay: false,
+          isSandbox: false,
+        };
+        (agentContext as any).urlMasks = urlMasks; // Inject for DocsAgent unmasking
+
+        // Execute unified routing decision
+        const routerResult = await this.agentRouter.route(
+          isFastTrack ? intentAction : 'route_intent',
+          agentContext
+        );
+
+        if (routerResult.routed) {
+          const { result } = routerResult;
           
-          await this.sendReply(
-            userId,
-            this.renderer.renderClarification((proposal as any).clarificationPrompt, (proposal as any).missingInformation),
-            messageId
-          );
-          break;
-
-        case ProposalType.INFORMATION_RESPONSE:
-          await this.sendReply(
-            userId,
-            this.renderer.renderInformation((proposal as any).responseText),
-            messageId
-          );
-          break;
-
-        case ProposalType.TOOL_REQUEST:
-        case ProposalType.COMMAND_PROPOSAL: {
-          const isTool = proposal.proposalType === ProposalType.TOOL_REQUEST;
-          const actionIntent = isTool ? (proposal as any).toolName : (proposal as any).actionIntent;
-          const rawPayload = isTool ? (proposal as any).toolArguments : (proposal as any).rawPayload;
-
-          RuntimeEventBus.log('ORCHESTRATION_DISPATCH', 'COMMAND',
-            `Dispatching command/tool: ${actionIntent}`,
-            traceId
-          );
-
-          let payloadObj: any = {};
-          if (typeof rawPayload === 'string') {
-            try {
-              payloadObj = JSON.parse(rawPayload);
-            } catch (e) {
-              payloadObj = {};
-            }
-          } else {
-            payloadObj = rawPayload || {};
-          }
-
-          // Log payloadObj keys and values for transparency
-          RuntimeEventBus.log('ORCHESTRATION_DISPATCH', 'COMMAND',
-            `Raw payload parsed keys: ${Object.keys(payloadObj).join(', ')} | Content: ${JSON.stringify(payloadObj)}`,
-            traceId
-          );
-
-          const commandId = randomUUID();
-          const correlationId = randomUUID();
-
-          const intentAction = (actionIntent || '').toLowerCase();
-
-          if (this.agentRouter && this.agentRouter.canRoute(intentAction)) {
-            try {
-              const agentContext = {
-                intent: intentAction,
-                payload: {
-                  ...payloadObj,
-                  userQuery: maskedMessageText,
-                  query: maskedMessageText,
-                  conversationContext: conversationHistoryContext
-                },
-                userId,
-                traceId,
-                correlationId,
-                isReplay: false,
-                isSandbox: false,
-              };
-              (agentContext as any).urlMasks = urlMasks; // Inject for DocsAgent unmasking
-
-              const routerResult = await this.agentRouter.route(intentAction, agentContext);
-
-              if (routerResult.routed) {
-                const { result } = routerResult;
-                const sentMsgId = await this.sendReply(userId, result.summaryReport, messageId);
-                if (sentMsgId && result.data?.bgRemovedFileId && db) {
-                  await db.collection('staged_media').updateOne(
-                    { driveFileId: result.data.bgRemovedFileId },
-                    { $set: { assistantReplyMessageId: sentMsgId } }
-                  );
-                  RuntimeEventBus.log('PIPELINE_BG_REMOVED_MAPPED', 'TRANSPORT', `Mapped assistant reply ID ${sentMsgId} to background-removed staged media.`, traceId);
-                }
-              } else {
-                await this.sendReply(userId, "I couldn't process that request right now. Please try rephrasing.", messageId);
-              }
-            } catch (err: any) {
-              console.error('[AgentRouter] Dispatch failed:', err);
-              await this.sendReply(userId, "I'm sorry, I encountered an error fulfilling your request.", messageId);
-            }
-          } else {
-            RuntimeEventBus.log('UNROUTED_INTENT', 'ERROR',
-              `No agent available to route intent: ${intentAction}`,
+          // Execute secondary Karen Personality Formatting Layer
+          let finalReplyText = result.summaryReport;
+          if (this.personaEngine) {
+            finalReplyText = await this.personaEngine.renderReply(
+              queryToProcess,
+              result.summaryReport,
+              conversationHistoryContext,
               traceId
             );
-            await this.sendReply(userId, "I don't have an agent available to handle that request.", messageId);
           }
-          break;
-        }
 
-        default:
-          RuntimeEventBus.log('UNHANDLED_PROPOSAL_TYPE', 'ERROR',
-            `Unhandled proposal type: ${proposal.proposalType}`,
-            traceId
-          );
+          const sentMsgId = await this.sendReply(userId, finalReplyText, messageId);
+
+          if (sentMsgId && result.data?.bgRemovedFileId && db) {
+            await db.collection('staged_media').updateOne(
+              { driveFileId: result.data.bgRemovedFileId },
+              { $set: { assistantReplyMessageId: sentMsgId } }
+            );
+            RuntimeEventBus.log('PIPELINE_BG_REMOVED_MAPPED', 'TRANSPORT', `Mapped assistant reply ID ${sentMsgId} to background-removed staged media.`, traceId);
+          }
+        } else {
+          // If the router fails/declines to route, let the persona layer translate the error/clarification gracefully
+          let finalFailureText = routerResult.reason;
+          if (this.personaEngine) {
+            finalFailureText = await this.personaEngine.renderReply(
+              queryToProcess,
+              `I encountered a bit of a block: ${routerResult.reason}`,
+              conversationHistoryContext,
+              traceId
+            );
+          }
+          await this.sendReply(userId, finalFailureText, messageId);
+        }
+      } else {
+        await this.sendReply(userId, "I don't have a supervisor router available to handle that request.", messageId);
       }
     } catch (error: any) {
       RuntimeEventBus.log('PIPELINE_PROCESS_ERROR', 'ERROR',

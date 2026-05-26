@@ -97,6 +97,26 @@ export class AgentRouter {
       }
     );
 
+    const directChatTool = FunctionTool.from(
+      async () => {
+        RuntimeEventBus.log('AGENT_ROUTER', 'SYSTEM', `LLM Chose DirectChat`, context.traceId);
+        routedTo = 'DirectChat';
+        subAgentResult = {
+          status: 'SUCCESS',
+          summaryReport: 'DELEGATE_TO_DIRECT_CHAT',
+          data: {},
+          mutationsCount: 0,
+          latencyMs: 0
+        };
+        return `Successfully routed to Direct Chat for personality chitchat.`;
+      },
+      {
+        name: 'route_to_direct_chat',
+        description: 'Route the request to direct chitchat/conversation. Use this for greetings, questions, personal conversations, standard chitchat, or when the user is simply talking or asking things that do not require specialized calendar, docs, or reminder tasks.',
+        parameters: { type: 'object', properties: {} }
+      }
+    );
+
     try {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
@@ -110,21 +130,30 @@ export class AgentRouter {
       });
 
       const agent = new OpenAIAgent({
-        tools: [calendarTool, systemOpsTool, docsTool],
+        tools: [calendarTool, systemOpsTool, docsTool, directChatTool],
         llm,
         verbose: true,
       });
+
+      const conversationContext = context.payload?.conversationContext || "";
 
       const query = `
 You are the Master Supervisor Router for Karen.
 Your ONLY job is to select the correct sub-agent tool to fulfill the user's intent.
 
-Intent: ${normalizedIntent}
-Payload: ${JSON.stringify(context.payload)}
+Recent Conversation & Memory Context:
+${conversationContext || "_No context._"}
 
-If the intent involves standard reminders, tasks, timers, or system state, call route_to_system_ops.
-If the intent involves calendar events or scheduling external meetings, call route_to_calendar.
-If the intent involves retrieving or saving personal/secure documents to the vault, or removing image backgrounds, call route_to_docs.
+PRONOUN RESOLUTION RULES:
+- Read the Conversation Context carefully to resolve ambiguous terms. E.g., if the user says "link of it" or "link?" or "show it" right after a document was stored/uploaded, "it" refers to that document. In that case, choose route_to_docs!
+- E.g., if the user says "snooze it" or "start it" after a reminder was discussed, "it" refers to the reminder. Choose route_to_system_ops!
+- E.g., if the user says "delete that meeting" or "when is it?" after scheduling/discussing a calendar event, Choose route_to_calendar!
+
+ROUTING CRITERIA:
+- If the intent is chitchat, greetings, general questions, talking about personal details, or standard conversation, call route_to_direct_chat.
+- If the intent involves standard reminders, tasks, timers, or system state, call route_to_system_ops.
+- If the intent involves calendar events or scheduling external meetings, call route_to_calendar.
+- If the intent involves retrieving or saving personal/secure documents to the vault, or removing image backgrounds, call route_to_docs.
 
 Call the appropriate tool now. DO NOT generate an answer without calling a tool.
       `;

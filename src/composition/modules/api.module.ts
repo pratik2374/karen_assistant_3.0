@@ -23,6 +23,7 @@ import { createApp } from '../../api/v1/app.js';
 import { ReminderSubAgent } from '../../application/ai/agents/ReminderSubAgent.js';
 import { MainKarenOrchestrator } from '../../application/ai/agents/MainKarenOrchestrator.js';
 import { MemoryService } from '../../application/ai/memory/MemoryService.js';
+import { KarenPersonaEngine } from '../../application/ai/persona/KarenPersonaEngine.js';
 import express from 'express';
 
 import { RuntimeConfig } from '../config/RuntimeConfig.js';
@@ -210,6 +211,7 @@ export function buildApiModule(
     }
     
     (pipeline as any).agentRouter = agentRouter;
+    (pipeline as any).personaEngine = new KarenPersonaEngine();
     if (vaultRepo) {
       (pipeline as any).vaultRepo = vaultRepo;
       InboundMessagePipeline.vaultRepoInstance = vaultRepo;
