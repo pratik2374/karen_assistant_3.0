@@ -185,6 +185,19 @@ export class InboundMessagePipeline {
     
     maskedMessageText = maskedMessageText.replace(urlRegex, (match) => {
       if (match.startsWith('{{MASKED_URL_')) return match;
+      
+      // Selectively bypass URL masking for YouTube and Instagram links
+      const lowercaseMatch = match.toLowerCase();
+      if (
+        lowercaseMatch.includes('youtube.com') ||
+        lowercaseMatch.includes('youtu.be') ||
+        lowercaseMatch.includes('instagram.com') ||
+        lowercaseMatch.includes('instagr.am') ||
+        lowercaseMatch.includes('instagr.com')
+      ) {
+        return match;
+      }
+      
       matchCount++;
       const maskKey = `{{MASKED_URL_${matchCount}}}`;
       urlMasks[maskKey] = match;

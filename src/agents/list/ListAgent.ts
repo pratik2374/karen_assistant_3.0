@@ -55,9 +55,38 @@ export class ListAgent implements IAgent {
         throw new Error('OPENAI_API_KEY is missing from environment variables');
       }
 
-      // Helper function to scrape metadata from public HTML
+      // Helper function to scrape metadata from public HTML and keyless oEmbed APIs
       const scrapeMetadata = async (url: string): Promise<{ title: string; description: string }> => {
         try {
+          // 1. YouTube oEmbed Integration
+          let cleanedUrl = url;
+          if (cleanedUrl.includes('/shorts/')) {
+            cleanedUrl = cleanedUrl.replace('/shorts/', '/watch?v=');
+          }
+          if (cleanedUrl.includes('youtube.com') && !cleanedUrl.includes('www.youtube.com')) {
+            cleanedUrl = cleanedUrl.replace('youtube.com', 'www.youtube.com');
+          }
+          
+          const lowercaseUrl = cleanedUrl.toLowerCase();
+          if (lowercaseUrl.includes('youtube.com') || lowercaseUrl.includes('youtu.be')) {
+            try {
+              const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(cleanedUrl)}&format=json`;
+              const oembedRes = await fetch(oembedUrl);
+              if (oembedRes.ok) {
+                const data = await oembedRes.json() as any;
+                if (data && data.title) {
+                  return {
+                    title: data.title.replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, "'").trim(),
+                    description: data.author_name ? `By ${data.author_name}` : ''
+                  };
+                }
+              }
+            } catch (oembedErr) {
+              console.error('[ListAgent Scraper] YouTube oEmbed failed, falling back to static scrape:', oembedErr);
+            }
+          }
+
+          // 2. Static HTML Scraper Fallback (for Instagram and other links)
           const response = await fetch(url, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
