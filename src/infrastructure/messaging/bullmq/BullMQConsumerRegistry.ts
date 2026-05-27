@@ -122,10 +122,21 @@ export class BullMQConsumerRegistry {
               console.log(chalk.cyan(`   ${message}`));
               console.log(chalk.cyan.bold(`==============================================\n`));
               
-              await this.whatsappAdapter.sendMessage(
+              const sentMsgId = await this.whatsappAdapter.sendMessage(
                 { to: wakeupResult.userId, body: message, idempotencyKey: `cal-reminder-${timerId}` },
                 false, false
               );
+              if (sentMsgId && this.db) {
+                await this.db.collection('alert_context').insertOne({
+                  messageId: sentMsgId,
+                  userId: wakeupResult.userId,
+                  taskId: wakeupResult.taskId,
+                  taskTitle: wakeupResult.taskTitle,
+                  createdAt: new Date(),
+                  type: 'CALENDAR_REMINDER'
+                });
+                RuntimeEventBus.log('CALENDAR_REMINDER_MAPPED', 'OUTBOUND', `Saved sentMsgId: ${sentMsgId} mapped to taskId: ${wakeupResult.taskId}`, timer.traceId);
+              }
               RuntimeEventBus.log('CALENDAR_REMINDER_SENT', 'OUTBOUND',
                 `Stage ${wakeupResult.messageStage} reminder sent to ${wakeupResult.userId}: "${wakeupResult.taskTitle}"`,
                 timer.traceId
@@ -208,10 +219,21 @@ export class BullMQConsumerRegistry {
                 `Delivering WhatsApp reminder to ${userId}: "${taskTitle}"`,
                 event.traceId, { userId, taskId: event.payload.taskId }
               );
-              await this.whatsappAdapter.sendMessage(
+              const sentMsgId = await this.whatsappAdapter.sendMessage(
                 { to: userId, body: text, idempotencyKey: `reminder-${event.eventId}` },
                 false, false
               );
+              if (sentMsgId && this.db) {
+                await this.db.collection('alert_context').insertOne({
+                  messageId: sentMsgId,
+                  userId: userId,
+                  taskId: event.payload.taskId || event.aggregateId,
+                  taskTitle: taskTitle,
+                  createdAt: new Date(),
+                  type: 'MANUAL_REMINDER'
+                });
+                RuntimeEventBus.log('MANUAL_REMINDER_MAPPED', 'OUTBOUND', `Saved sentMsgId: ${sentMsgId} mapped to taskId: ${event.payload.taskId || event.aggregateId}`, event.traceId);
+              }
 
             } else if (event.eventType === 'Task.Snoozed') {
               // Route snooze to saga dispatcher

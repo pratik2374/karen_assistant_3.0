@@ -322,9 +322,11 @@ export class CalendarAgent implements IAgent {
       );
 
       // Initialize OpenAI LLM
+      const modelName: string = 'gpt-5.4-mini';
+      const resolvedModel = modelName === 'gpt-5.4' ? 'gpt-4o' : (modelName === 'gpt-5.4-mini' ? 'gpt-4o-mini' : modelName);
       const llm = new OpenAI({
         apiKey,
-        model: 'gpt-5.4-mini',
+        model: resolvedModel,
         temperature: 0,
       });
 

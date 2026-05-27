@@ -14,6 +14,7 @@ export interface TimerWakeupResult {
   taskTitle?: string;
   userId?: string;
   sagaType?: string;
+  taskId?: string;
 }
 
 export class SagaDispatcher {
@@ -154,7 +155,7 @@ export class SagaDispatcher {
       await this.sagaRepository.save(saga.createSnapshot(), snapshot.version);
 
       if (result) {
-        return { messageStage: result.stage, taskTitle: result.title, userId: result.userId, sagaType: 'CalendarReminder' };
+        return { messageStage: result.stage, taskTitle: result.title, userId: result.userId, sagaType: 'CalendarReminder', taskId: snapshot.aggregateId };
       }
     } else if (snapshot.sagaType === 'ReminderEscalation') {
       const saga = new ReminderEscalationSaga(sagaId, snapshot.aggregateId, snapshot.correlationId, snapshot.traceId, snapshot.payloadData);

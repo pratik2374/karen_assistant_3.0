@@ -1,6 +1,7 @@
 import { ISubAgent, IAgentGoal, IAgentResult } from './AgentContracts.js';
 import { IOpenAIAdapter } from '../../ports/IOpenAIAdapter.js';
 import { ReminderAggregate } from '../../../domain/reminder/ReminderAggregate.js';
+import { TimeContext } from '../../../domain/shared/value-objects/TimeContext.js';
 import { randomUUID } from 'crypto';
 import { RuntimeEventBus } from '../../../console/RuntimeEventBus.js';
 
@@ -121,6 +122,37 @@ ${formattedReminders || 'None active.'}
 
         reminder.acknowledge(traceId, correlationId);
         await persistence.reminderRepository.saveWithVersion(reminder, expectedVersion);
+
+        // Complete corresponding TaskAggregate if it exists
+        const task = await persistence.taskRepository.findById(taskId);
+        if (task) {
+          const nowTask = new Date();
+          const timeCtx = TimeContext.create('Asia/Kolkata', 0, nowTask, nowTask, false);
+          const cmdCtx = {
+            traceId,
+            correlationId,
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            timeContext: timeCtx
+          };
+          task.complete(cmdCtx);
+          await persistence.taskRepository.saveWithVersion(task, task.version);
+
+          const taskEvents = task.uncommittedEvents.map((event: any) => ({
+            messageId: randomUUID(),
+            eventType: event.eventType,
+            payload: event,
+            createdAt: nowTask,
+            processedAt: null,
+            idempotencyKey: `${correlationId}:${event.eventType}:${task.version}`,
+            deduplicationKey: `${taskId}:${event.eventType}:${task.version}`,
+            replaySafe: false,
+            sideEffectFree: false,
+            traceId,
+            correlationId,
+            causationId: correlationId
+          }));
+          await persistence.outboxStore.saveBulk(taskEvents);
+        }
 
         // Fetch task details for our report summary
         const saga = await persistence.db.collection('saga_states').findOne({ 'payloadData.taskId': taskId });

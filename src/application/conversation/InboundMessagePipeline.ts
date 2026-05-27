@@ -51,6 +51,41 @@ export class InboundMessagePipeline {
     const urlMasks: Record<string, string> = {};
     let finalQueryText = messageText || '';
 
+    // --- TASK ALERT REPLY CORRELATION ---
+    let matchedTaskId: string | null = null;
+    if (db) {
+      if (parentMessageId) {
+        const alert = await db.collection('alert_context').findOne({ messageId: parentMessageId });
+        if (alert) {
+          matchedTaskId = alert.taskId;
+          RuntimeEventBus.log('PIPELINE_REPLY_MATCH', 'TRANSPORT', `Incoming message correlates to alert task ID: ${matchedTaskId}`, traceId);
+        }
+      }
+      
+      if (!matchedTaskId) {
+        const lowercaseMsg = (messageText || '').toLowerCase().trim();
+        const isQuickReply = lowercaseMsg === 'started' ||
+                             lowercaseMsg === 'done' ||
+                             lowercaseMsg === 'complete' ||
+                             lowercaseMsg === 'completed' ||
+                             lowercaseMsg.startsWith('snooze');
+        if (isQuickReply) {
+          const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+          const latestAlert = await db.collection('alert_context').findOne(
+            {
+              userId,
+              createdAt: { $gte: fifteenMinutesAgo }
+            },
+            { sort: { createdAt: -1 } }
+          );
+          if (latestAlert) {
+            matchedTaskId = latestAlert.taskId;
+            RuntimeEventBus.log('PIPELINE_REPLY_MATCH_FALLBACK', 'TRANSPORT', `Correlated quick reply to most recent alert task ID: ${matchedTaskId}`, traceId);
+          }
+        }
+      }
+    }
+
     // A. INCOMING STAGED MEDIA REPLY CORRELATION
     let staged = null;
     if (parentMessageId && db) {
@@ -340,7 +375,8 @@ export class InboundMessagePipeline {
             ...payloadObj,
             userQuery: maskedMessageText,
             query: maskedMessageText,
-            conversationContext: conversationHistoryContext
+            conversationContext: conversationHistoryContext,
+            ...(matchedTaskId ? { active_context_task_id: matchedTaskId } : {})
           },
           userId,
           traceId,

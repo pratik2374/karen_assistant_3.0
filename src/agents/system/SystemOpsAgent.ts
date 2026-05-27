@@ -5,6 +5,7 @@ import { FunctionTool } from 'llamaindex';
 import { ICommandExecutor } from '../../application/executor/IExecutor.js';
 import { PersistenceModule } from '../../composition/modules/persistence.module.js';
 import { ReminderAggregate } from '../../domain/reminder/ReminderAggregate.js';
+import { TimeContext } from '../../domain/shared/value-objects/TimeContext.js';
 import { randomUUID } from 'crypto';
 import * as dotenv from 'dotenv';
 dotenv.config();
@@ -229,6 +230,38 @@ export class SystemOpsAgent implements IAgent {
           }));
 
           await this.persistence.outboxStore.saveBulk(outboxMessages);
+
+          // Complete the TaskAggregate if it exists
+          const task = await this.persistence.taskRepository.findById(taskId);
+          if (task) {
+            const nowTask = new Date();
+            const timeCtx = TimeContext.create('Asia/Kolkata', 0, nowTask, nowTask, false);
+            const cmdCtx = {
+              traceId: context.traceId,
+              correlationId: context.correlationId || randomUUID(),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+              timeContext: timeCtx
+            };
+            task.complete(cmdCtx);
+            await this.persistence.taskRepository.saveWithVersion(task, task.version);
+
+            const taskEvents = task.uncommittedEvents.map((event: any) => ({
+              messageId: randomUUID(),
+              eventType: event.eventType,
+              payload: event,
+              createdAt: now,
+              processedAt: null,
+              idempotencyKey: `${context.correlationId}:${event.eventType}:${task!.version}`,
+              deduplicationKey: `${taskId}:${event.eventType}:${task!.version}`,
+              replaySafe: false,
+              sideEffectFree: false,
+              traceId: context.traceId,
+              correlationId: context.correlationId || randomUUID(),
+              causationId: randomUUID()
+            }));
+            await this.persistence.outboxStore.saveBulk(taskEvents);
+          }
+
           await uow.commit();
 
           return `Successfully acknowledged/completed reminder ${taskId}.`;
@@ -361,9 +394,11 @@ export class SystemOpsAgent implements IAgent {
         throw new Error('OPENAI_API_KEY is missing from environment variables');
       }
 
+      const modelName: string = 'gpt-5.4-mini';
+      const resolvedModel = modelName === 'gpt-5.4' ? 'gpt-4o' : (modelName === 'gpt-5.4-mini' ? 'gpt-4o-mini' : modelName);
       const llm = new OpenAI({
         apiKey,
-        model: 'gpt-5.4-mini', 
+        model: resolvedModel, 
         temperature: 0,
       });
 
@@ -395,6 +430,7 @@ RULES:
    - IMPORTANT: Do NOT filter by date when calling query_tasks. Just use { "state": "CREATED" }.
    - Report the title and expiresAt for each task found. If expiresAt is in the past, note it has expired.
 4. Do NOT make up data. If a tool returns [] or empty, say there are no items of that type.
+5. If a specific task ID is specified as 'active_context_task_id' in Parameters from Karen, and the user's intent is to start, complete, acknowledge, or snooze that task, you MUST immediately use that 'active_context_task_id' as the taskId parameter for the acknowledge_reminder or snooze_reminder tool call!
       `;
 
       const response = await agent.chat({
